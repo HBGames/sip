@@ -30,7 +30,7 @@
   ],
   "scripts": {
     "clean": "rm -f dist/index.js dist/index.d.ts dist/index.js.map",
-    "build": "pnpm build:wasm && pnpm clean && tsup",
+    "build": "([ -f dist/sip.wasm ] || pnpm build:wasm) && pnpm clean && tsup",
     "build:wasm": "bash wasm/build.sh",
     "build:code": "pnpm clean && tsup",
     "dev": "tsup --watch",
