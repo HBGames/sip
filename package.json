@@ -1,10 +1,10 @@
 {
   "name": "@standardagents/sip",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Small Image Processor - Ultra memory-efficient image processing for Cloudflare Workers",
   "private": false,
   "publishConfig": {
-    "access": "restricted",
+    "access": "public",
     "registry": "https://registry.npmjs.org/"
   },
   "type": "module",
