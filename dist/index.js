@@ -273,18 +273,13 @@ function isWasmAvailable() {
   return wasmModule !== null;
 }
 async function initWithWasmModule(compiledModule) {
-  console.log("[sip:initWithWasmModule] Called with module:", compiledModule ? "provided" : "none");
   if (wasmModule) {
-    console.log("[sip:initWithWasmModule] Already initialized, skipping");
     return;
   }
   if (compiledModule) {
     precompiledWasmModule = compiledModule;
-    console.log("[sip:initWithWasmModule] Stored pre-compiled module");
   }
-  console.log("[sip:initWithWasmModule] Calling loadWasm...");
   await loadWasm();
-  console.log("[sip:initWithWasmModule] loadWasm completed, wasmModule:", wasmModule ? "loaded" : "null");
 }
 function getWasmModule() {
   if (!wasmModule) {
@@ -309,40 +304,30 @@ async function loadWasm() {
   }
 }
 async function doLoadWasm() {
-  console.log("[sip:doLoadWasm] Starting...");
   if (typeof globalThis !== "undefined" && globalThis.__SIP_WASM_LOADER__) {
-    console.log("[sip:doLoadWasm] Using external loader");
     const loader = globalThis.__SIP_WASM_LOADER__;
     return await loader();
   }
   try {
-    console.log("[sip:doLoadWasm] Importing sip.js...");
     const createSipModule = (await import('./sip.js')).default;
-    console.log("[sip:doLoadWasm] sip.js imported, createSipModule:", typeof createSipModule);
     if (precompiledWasmModule) {
-      console.log("[sip:doLoadWasm] Using pre-compiled module with instantiateWasm callback");
       const module2 = await new Promise((resolve, reject) => {
         let resolvedModule = null;
         createSipModule({
           instantiateWasm: (imports, receiveInstance) => {
-            console.log("[sip:instantiateWasm] Called, instantiating with pre-compiled module");
             WebAssembly.instantiate(precompiledWasmModule, imports).then((instance) => {
-              console.log("[sip:instantiateWasm] Instance created successfully");
               receiveInstance(instance);
             }).catch((err) => {
-              console.error("[sip:instantiateWasm] Failed:", err);
               reject(err);
             });
             return {};
           },
           onRuntimeInitialized: () => {
-            console.log("[sip:onRuntimeInitialized] Runtime ready, HEAPU8:", resolvedModule?.HEAPU8 ? "exists" : "undefined");
             if (resolvedModule && resolvedModule.HEAPU8) {
               resolve(resolvedModule);
             }
           }
         }).then((mod) => {
-          console.log("[sip:doLoadWasm] Module promise resolved, HEAPU8:", mod?.HEAPU8 ? "exists" : "undefined");
           resolvedModule = mod;
           if (mod.HEAPU8) {
             resolve(mod);
@@ -351,12 +336,9 @@ async function doLoadWasm() {
       });
       return module2;
     }
-    console.log("[sip:doLoadWasm] Using standard loading");
     const module = await createSipModule();
-    console.log("[sip:doLoadWasm] Standard load complete, module.HEAPU8:", module?.HEAPU8 ? "exists" : "undefined");
     return module;
   } catch (err) {
-    console.error("[sip:doLoadWasm] Failed:", err);
     throw new Error(
       "SIP WASM module not available. To use streaming processing, build the WASM module with `pnpm build:wasm` in packages/sip. Error: " + (err instanceof Error ? err.message : String(err))
     );
