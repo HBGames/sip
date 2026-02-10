@@ -1,6 +1,6 @@
 {
   "name": "@standardagents/sip",
-  "version": "0.12.6",
+  "version": "0.12.7",
   "description": "Small Image Processor - Ultra memory-efficient image processing for Cloudflare Workers",
   "private": false,
   "publishConfig": {
