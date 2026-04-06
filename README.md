@@ -17,6 +17,19 @@
 pnpm add @standardagents/sip
 ```
 
+## Docs Site
+
+The repo includes a small static documentation site built with Arrow and Vite.
+
+```bash
+pnpm docs:dev
+pnpm docs:build
+pnpm docs:preview
+```
+
+- Source files live in `docs/`
+- The production build outputs to `docs-dist/`
+
 ## Usage
 
 ```typescript

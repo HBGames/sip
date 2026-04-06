@@ -58,8 +58,30 @@ wasm/
 └── libs/                 # Downloaded during build (not committed)
     ├── libjpeg-turbo-3.0.1/
     ├── libspng-0.7.4/
-    └── miniz-3.0.2/
+    └── miniz-2.2.0/
+
+docs/
+├── index.html            # Static docs shell
+├── main.js               # Arrow app entrypoint
+├── styles.css            # Docs site styling
+└── vite.config.mjs       # Static site build config
+
+docs-dist/                # Generated static site output (gitignored)
 ```
+
+## Docs Site
+
+This repo ships a simple static docs site built with Arrow and Vite.
+
+```bash
+pnpm docs:dev
+pnpm docs:build
+pnpm docs:preview
+```
+
+Use it for package-level docs and examples only. Keep it static, client-only, and
+independent from the library build. The build output goes to `docs-dist/` and
+should not be committed.
 
 ## WASM Build
 

@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+docs-dist/
 
 # WASM build artifacts (intermediate files)
 wasm/build/
