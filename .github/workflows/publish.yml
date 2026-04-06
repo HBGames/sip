@@ -1,0 +1,143 @@
+name: Publish to npm
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      dist-tag: ${{ steps.meta.outputs.dist_tag }}
+      prerelease: ${{ steps.meta.outputs.prerelease }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - name: Parse release tag
+        id: meta
+        shell: bash
+        run: |
+          TAG="${GITHUB_REF_NAME#v}"
+
+          if [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "version=$TAG" >> "$GITHUB_OUTPUT"
+            echo "dist_tag=latest" >> "$GITHUB_OUTPUT"
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          if [[ "$TAG" =~ ^[0-9]+\.[0-9]+\.[0-9]+-([a-z][a-z0-9-]*)\.([0-9a-f]+)$ ]]; then
+            echo "version=$TAG" >> "$GITHUB_OUTPUT"
+            echo "dist_tag=${BASH_REMATCH[1]}" >> "$GITHUB_OUTPUT"
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "::error::Unsupported tag format: ${GITHUB_REF_NAME}"
+          echo "::error::Use vX.Y.Z for stable releases or vX.Y.Z-<dist-tag>.<hash> for pre-releases."
+          exit 1
+
+      - name: Require stable tags to reference main
+        if: steps.meta.outputs.prerelease == 'false'
+        shell: bash
+        run: |
+          git fetch origin main --depth=1
+          if ! git merge-base --is-ancestor HEAD origin/main; then
+            echo "::error::Stable tags must point to a commit reachable from origin/main."
+            exit 1
+          fi
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.14.0
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+          node-version: lts/*
+
+      - name: Install latest npm
+        run: npm install --global npm@latest
+
+      - name: Show npm version
+        run: npm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Verify package
+        run: pnpm verify
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 10.14.0
+          run_install: false
+
+      - uses: actions/setup-node@v6
+        with:
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+          node-version: lts/*
+          registry-url: https://registry.npmjs.org
+
+      - name: Install latest npm
+        run: npm install --global npm@latest
+
+      - name: Show npm version
+        run: npm --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build publish artifacts
+        run: pnpm build
+
+      - name: Publish package
+        run: npm publish --access public --provenance --tag "${{ needs.build.outputs.dist-tag }}"
+
+  release:
+    needs: [build, publish]
+    if: needs.publish.result == 'success' && needs.build.outputs.prerelease == 'false'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+          ref: ${{ github.ref }}
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: lts/*
+
+      - name: Install latest npm
+        run: npm install --global npm@latest
+
+      - name: Generate GitHub release notes
+        run: npx changelogithub@latest
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

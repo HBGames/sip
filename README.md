@@ -30,6 +30,27 @@ pnpm docs:preview
 - Source files live in `docs/`
 - The production build outputs to `docs-dist/`
 
+## Release
+
+Publishing is handled by GitHub Actions with npm trusted publishing. The workflow
+publishes from version tags and does not use an `NPM_TOKEN`.
+
+```bash
+pnpm verify
+pnpm verify:release
+pnpm release
+pnpm release:next
+pnpm release:dev
+```
+
+- `pnpm release` on `main` bumps `package.json`, commits the new stable version, and pushes the branch plus the `vX.Y.Z` tag
+- `pnpm release:next` and `pnpm release:dev` create a temporary tagged commit like `v1.1.1-next.231fa`, push only the tag, then restore your local branch to the original version
+- You can pass `--bump=major|minor|patch` and `--tag=<dist-tag>` to the release script directly
+- Stable tags create GitHub release notes after a successful npm publish; pre-release tags skip that step
+
+Trusted publishing must be configured in npm for the `standardagents/sip`
+repository and `.github/workflows/publish.yml`.
+
 ## Usage
 
 ```typescript

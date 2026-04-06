@@ -66,6 +66,12 @@ docs/
 ├── styles.css            # Docs site styling
 └── vite.config.mjs       # Static site build config
 
+scripts/
+└── release.mjs           # Local release orchestration for stable and prerelease tags
+
+.github/workflows/
+└── publish.yml           # Tag-driven build, npm trusted publish, release notes
+
 docs-dist/                # Generated static site output (gitignored)
 ```
 
@@ -82,6 +88,25 @@ pnpm docs:preview
 Use it for package-level docs and examples only. Keep it static, client-only, and
 independent from the library build. The build output goes to `docs-dist/` and
 should not be committed.
+
+## Release Automation
+
+Publishing is driven by tag pushes. npm releases use trusted publishing from
+GitHub Actions, so there is no `NPM_TOKEN` in this repo or workflow.
+
+```bash
+pnpm verify              # CI-equivalent check: typecheck, build, docs, unit tests
+pnpm verify:release      # Local release gate: rebuild WASM, then run verify
+pnpm release             # Stable release from main
+pnpm release:next        # Pre-release tag flow
+pnpm release:dev         # Alternate pre-release tag flow
+```
+
+Rules:
+- Stable releases must come from `main` and produce tags like `v1.2.3`
+- Pre-releases use tags like `v1.2.4-next.231fa`
+- Pre-release version bumps happen in a temporary commit that is pushed only by tag, then the local branch is restored to its original version
+- The publish workflow only generates GitHub release notes for stable tags after a successful npm publish
 
 ## WASM Build
 

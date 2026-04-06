@@ -13,6 +13,7 @@
     "type": "git",
     "url": "https://github.com/standardagents/sip.git"
   },
+  "packageManager": "pnpm@10.14.0+sha512.ad27a79641b49c3e481a16a805baa71817a04bbe06a38d17e60e2eaee83f6a146c6a688125f5792e48dd5ba30e7da52a5cda4c3992b9ccf333f9ce223af84748",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
@@ -37,10 +38,15 @@
     "docs:build": "vite build --config docs/vite.config.mjs",
     "docs:preview": "vite preview --config docs/vite.config.mjs",
     "typecheck": "tsc --noEmit",
+    "verify": "pnpm typecheck && pnpm build && pnpm docs:build && pnpm test:unit",
+    "verify:release": "pnpm build:wasm && pnpm verify",
     "test": "vitest",
     "test:unit": "vitest run",
     "test:watch": "vitest --watch",
-    "test:workers": "vitest run --config vitest.config.workers.ts"
+    "test:workers": "vitest run --config vitest.config.workers.ts",
+    "release": "node scripts/release.mjs",
+    "release:next": "node scripts/release.mjs --tag=next",
+    "release:dev": "node scripts/release.mjs --tag=dev"
   },
   "dependencies": {
     "@jsquash/avif": "^2.1.1",
