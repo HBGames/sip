@@ -107,6 +107,7 @@ Rules:
 - Pre-releases use tags like `v1.2.4-next.231fa`
 - Pre-release version bumps happen in a temporary commit that is pushed only by tag, then the local branch is restored to its original version
 - The publish workflow only generates GitHub release notes for stable tags after a successful npm publish
+- All commits in this repo should use Conventional Commits formatting
 
 ## WASM Build
 
