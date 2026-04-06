@@ -11,7 +11,9 @@
 
 import { describe, it, expect, beforeAll } from 'vitest';
 import { readFile } from 'fs/promises';
+import { existsSync } from 'fs';
 import { join } from 'path';
+import { pathToFileURL } from 'url';
 import { probe, sip, initStreaming } from '../src';
 
 const FIXTURES_DIR = join(__dirname, 'fixtures');
@@ -33,6 +35,19 @@ beforeAll(async () => {
     readFile(join(FIXTURES_DIR, 'sample.webp')).then((b) => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)),
     readFile(join(FIXTURES_DIR, 'sample.avif')).then((b) => b.buffer.slice(b.byteOffset, b.byteOffset + b.byteLength)),
   ]);
+
+  // In source-level tests, load the built WASM glue from dist/ when available.
+  const builtWasmLoaderPath = join(__dirname, '..', 'dist', 'sip.js');
+  const builtWasmBinaryPath = join(__dirname, '..', 'dist', 'sip.wasm');
+  if (existsSync(builtWasmLoaderPath)) {
+    (globalThis as typeof globalThis & {
+      __SIP_WASM_LOADER__?: () => Promise<unknown>;
+    }).__SIP_WASM_LOADER__ = async () => {
+      const { default: createSipModule } = await import(pathToFileURL(builtWasmLoaderPath).href);
+      const wasmBinary = await readFile(builtWasmBinaryPath);
+      return createSipModule({ wasmBinary });
+    };
+  }
 
   // Check if WASM is available
   wasmAvailable = await initStreaming();

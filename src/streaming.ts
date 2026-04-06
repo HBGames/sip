@@ -36,6 +36,31 @@ const DEFAULT_OPTIONS: Required<ProcessOptions> = {
   quality: 85,
 };
 
+function calculateRetryDimensions(
+  width: number,
+  height: number,
+  currentBytes: number,
+  maxBytes: number
+): { width: number; height: number } | null {
+  const scaleFactor = Math.sqrt(maxBytes / currentBytes) * 0.85;
+  let nextWidth = Math.max(1, Math.floor(width * scaleFactor));
+  let nextHeight = Math.max(1, Math.floor(height * scaleFactor));
+
+  if (nextWidth >= width && width > 1) {
+    nextWidth = width - 1;
+  }
+
+  if (nextHeight >= height && height > 1) {
+    nextHeight = height - 1;
+  }
+
+  if (nextWidth === width && nextHeight === height) {
+    return null;
+  }
+
+  return { width: nextWidth, height: nextHeight };
+}
+
 /**
  * Process a JPEG image using streaming pipeline
  *
@@ -129,6 +154,34 @@ export async function processJpegStreaming(
       return processJpegStreaming(input, {
         ...opts,
         quality: opts.quality - 10,
+      });
+    }
+
+    if (jpegData.byteLength > opts.maxBytes) {
+      encoder.dispose();
+      decoder.dispose();
+
+      const retryDimensions = calculateRetryDimensions(
+        target.width,
+        target.height,
+        jpegData.byteLength,
+        opts.maxBytes
+      );
+
+      if (!retryDimensions) {
+        return {
+          data: jpegData,
+          width: target.width,
+          height: target.height,
+          mimeType: 'image/jpeg',
+          originalFormat: 'jpeg',
+        };
+      }
+
+      return processJpegStreaming(input, {
+        ...opts,
+        maxWidth: retryDimensions.width,
+        maxHeight: retryDimensions.height,
       });
     }
 
@@ -231,6 +284,34 @@ export async function processPngStreaming(
       return processPngStreaming(input, {
         ...opts,
         quality: opts.quality - 10,
+      });
+    }
+
+    if (jpegData.byteLength > opts.maxBytes) {
+      encoder.dispose();
+      decoder.dispose();
+
+      const retryDimensions = calculateRetryDimensions(
+        target.width,
+        target.height,
+        jpegData.byteLength,
+        opts.maxBytes
+      );
+
+      if (!retryDimensions) {
+        return {
+          data: jpegData,
+          width: target.width,
+          height: target.height,
+          mimeType: 'image/jpeg',
+          originalFormat: 'png',
+        };
+      }
+
+      return processPngStreaming(input, {
+        ...opts,
+        maxWidth: retryDimensions.width,
+        maxHeight: retryDimensions.height,
       });
     }
 

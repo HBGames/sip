@@ -80,6 +80,7 @@ if [ ! -f "$LIBJPEG_BUILD/libjpeg.a" ]; then
     # Configure with CMake for Emscripten
     emcmake cmake "$LIBJPEG_DIR" \
         -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
         -DENABLE_SHARED=OFF \
         -DENABLE_STATIC=ON \
         -DWITH_SIMD=OFF \
