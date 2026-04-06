@@ -89,7 +89,7 @@ export class SimpleDecoder implements Decoder {
       case 'png':
         throw new Error(
           `${this.format.toUpperCase()} requires native WASM decoder. ` +
-          'Build the WASM module with `pnpm build:wasm` in packages/sip.'
+          'Build the WASM module with `pnpm build:wasm` in the @standardagents/sip repo root.'
         );
       default:
         throw new Error(`Unsupported format for SimpleDecoder: ${this.format}`);

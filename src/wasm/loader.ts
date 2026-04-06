@@ -148,7 +148,7 @@ async function doLoadWasm(): Promise<SipWasmModule> {
   } catch (err) {
     throw new Error(
       'SIP WASM module not available. ' +
-      'To use streaming processing, build the WASM module with `pnpm build:wasm` in packages/sip. ' +
+      'To use streaming processing, build the WASM module with `pnpm build:wasm` in the @standardagents/sip repo root. ' +
       'Error: ' + (err instanceof Error ? err.message : String(err))
     );
   }

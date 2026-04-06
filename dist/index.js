@@ -214,7 +214,7 @@ var SimpleDecoder = class {
       case "jpeg":
       case "png":
         throw new Error(
-          `${this.format.toUpperCase()} requires native WASM decoder. Build the WASM module with \`pnpm build:wasm\` in packages/sip.`
+          `${this.format.toUpperCase()} requires native WASM decoder. Build the WASM module with \`pnpm build:wasm\` in the @standardagents/sip repo root.`
         );
       default:
         throw new Error(`Unsupported format for SimpleDecoder: ${this.format}`);
@@ -340,7 +340,7 @@ async function doLoadWasm() {
     return module;
   } catch (err) {
     throw new Error(
-      "SIP WASM module not available. To use streaming processing, build the WASM module with `pnpm build:wasm` in packages/sip. Error: " + (err instanceof Error ? err.message : String(err))
+      "SIP WASM module not available. To use streaming processing, build the WASM module with `pnpm build:wasm` in the @standardagents/sip repo root. Error: " + (err instanceof Error ? err.message : String(err))
     );
   }
 }

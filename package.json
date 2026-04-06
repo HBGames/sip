@@ -11,8 +11,7 @@
   "license": "UNLICENSED",
   "repository": {
     "type": "git",
-    "url": "https://github.com/standardagents/standardagents.git",
-    "directory": "packages/sip"
+    "url": "https://github.com/standardagents/sip.git"
   },
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",

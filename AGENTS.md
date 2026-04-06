@@ -2,6 +2,9 @@
 
 **S**mall **I**mage **P**rocessor - Ultra memory-efficient image processing for Cloudflare Workers.
 
+This package now lives in the standalone `standardagents/sip` repository. It is
+published independently and consumed by other Standard Agents packages via npm.
+
 ## Why This Exists
 
 Cloudflare Workers: 128MB memory limit. A 25MP JPEG decoded = ~100MB raw pixels. Traditional libraries cause "Network connection lost" errors on large uploads.
@@ -69,7 +72,6 @@ cd emsdk && ./emsdk install latest && ./emsdk activate latest
 source ./emsdk_env.sh
 
 # Build WASM
-cd packages/sip
 pnpm build:wasm
 ```
 

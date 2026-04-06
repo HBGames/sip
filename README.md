@@ -131,7 +131,6 @@ cd emsdk && ./emsdk install latest && ./emsdk activate latest
 source ./emsdk_env.sh
 
 # Build WASM
-cd packages/sip
 pnpm build:wasm
 ```
 
