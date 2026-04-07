@@ -1,6 +1,8 @@
 import { component, html, reactive } from '@arrow-js/core'
 import { render } from '@arrow-js/framework'
 import highlighted from 'virtual:highlighted-code'
+import sampleImageUrl from './sample.png'
+import sipLogoUrl from './sip.png'
 import './styles.css'
 
 const state = reactive({
@@ -12,7 +14,7 @@ const state = reactive({
   demoError: '',
   demoInputInfo: 'Sample image ready. Upload your own or process this one as a raw request body.',
   demoOutputInfo: '',
-  demoInputUrl: '/sample.png',
+  demoInputUrl: sampleImageUrl,
   demoOutputUrl: '',
   demoProcessing: false,
   demoHasResult: false,
@@ -117,23 +119,42 @@ async function getDemoFile() {
   }
 
   const res = await fetch(state.demoInputUrl)
+  if (!res.ok) {
+    throw new Error('Could not load the sample image')
+  }
   const blob = await res.blob()
   return new File([blob], 'sample.png', { type: blob.type || 'image/png' })
 }
 
-async function processDemo() {
-  const file = await getDemoFile()
+function getDocsBaseUrl() {
+  const { origin, pathname } = window.location
 
+  if (pathname === '/' || pathname.endsWith('/')) {
+    return new URL(pathname, origin)
+  }
+
+  const lastSlash = pathname.lastIndexOf('/')
+  const lastSegment = pathname.slice(lastSlash + 1)
+
+  if (lastSegment.includes('.')) {
+    return new URL(pathname.slice(0, lastSlash + 1) || '/', origin)
+  }
+
+  return new URL(`${pathname}/`, origin)
+}
+
+async function processDemo() {
   state.demoError = ''
   state.demoHasResult = false
   state.demoProcessing = true
 
-  const url = new URL('/api/process', window.location.origin)
-  url.searchParams.set('width', state.demoMaxWidth)
-  url.searchParams.set('height', state.demoMaxHeight)
-  url.searchParams.set('quality', state.demoQuality)
-
   try {
+    const file = await getDemoFile()
+    const url = new URL('api/process', getDocsBaseUrl())
+    url.searchParams.set('width', state.demoMaxWidth)
+    url.searchParams.set('height', state.demoMaxHeight)
+    url.searchParams.set('quality', state.demoQuality)
+
     const res = await fetch(url, {
       method: 'POST',
       headers: {
@@ -196,7 +217,7 @@ const App = component(() => html`
   <main class="page">
     <nav class="nav">
       <a href="#" class="nav__brand">
-        <img src="./sip.png" alt="sip" />
+        <img src="${sipLogoUrl}" alt="sip" />
         <span>sip</span>
       </a>
       <a
@@ -219,7 +240,7 @@ const App = component(() => html`
           <span class="hero__badge-dot"></span>
           <span>Measured peak memory, not heap-size guesswork</span>
         </div>
-        <img src="./sip.png" alt="sip" class="hero__banner" />
+        <img src="${sipLogoUrl}" alt="sip" class="hero__banner" />
         <h1 class="hero__title">
           <span class="hero__title-line">Small Image</span>
           <span class="hero__title-accent">Processor</span>
