@@ -13,6 +13,7 @@ export interface SipWasmModule {
 
   // Decoder functions
   _sip_decoder_create(): number;
+  _sip_decoder_push_input(dec: number, data: number, size: number, isFinal: number): number;
   _sip_decoder_set_source(dec: number, data: number, size: number): number;
   _sip_decoder_read_header(dec: number): number;
   _sip_decoder_get_width(dec: number): number;
@@ -25,6 +26,7 @@ export interface SipWasmModule {
   _sip_decoder_read_scanline(dec: number): number;
   _sip_decoder_get_scanline(dec: number): number;
   _sip_decoder_finish(dec: number): number;
+  _sip_decoder_get_buffered_input_size(dec: number): number;
   _sip_decoder_destroy(dec: number): void;
 
   // Encoder functions
@@ -38,6 +40,10 @@ export interface SipWasmModule {
   _sip_encoder_finish(enc: number): number;
   _sip_encoder_get_output(enc: number): number;
   _sip_encoder_get_output_size(enc: number): number;
+  _sip_encoder_peek_chunk_data(enc: number): number;
+  _sip_encoder_peek_chunk_size(enc: number): number;
+  _sip_encoder_pop_chunk(enc: number): number;
+  _sip_encoder_get_buffered_output_size(enc: number): number;
   _sip_encoder_destroy(enc: number): void;
 
   // PNG Decoder functions

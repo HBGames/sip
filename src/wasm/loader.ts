@@ -101,6 +101,18 @@ async function doLoadWasm(): Promise<SipWasmModule> {
     // @ts-ignore - Dynamic import of built WASM module
     const createSipModule = (await import('./sip.js')).default;
 
+    const isNode =
+      typeof process !== 'undefined' &&
+      process.versions != null &&
+      process.versions.node != null;
+
+    if (isNode) {
+      const { readFile } = await import('fs/promises');
+      const wasmBinary = await readFile(new URL('./sip.wasm', import.meta.url));
+      const module = await createSipModule({ wasmBinary });
+      return module as SipWasmModule;
+    }
+
     // If we have a pre-compiled module, use instantiateWasm callback
     if (precompiledWasmModule) {
       const module = await new Promise<SipWasmModule>((resolve, reject) => {

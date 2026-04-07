@@ -16,32 +16,65 @@
 #include <spng.h>
 #include <emscripten.h>
 
+typedef struct SipChunk {
+    uint8_t *data;
+    uint32_t size;
+    struct SipChunk *next;
+} SipChunk;
+
 // ============================================================================
 // Decoder State
 // ============================================================================
 
+typedef struct SipDecoder SipDecoder;
+
 typedef struct {
+    struct jpeg_source_mgr pub;
+    SipDecoder *owner;
+    JOCTET eoi_buffer[2];
+} SipDecoderSourceManager;
+
+struct SipDecoder {
     struct jpeg_decompress_struct cinfo;
     struct jpeg_error_mgr jerr;
     JSAMPROW row_buffer;
+    SipChunk *input_head;
+    SipChunk *input_tail;
+    SipChunk *active_input_chunk;
+    uint32_t queued_input_bytes;
+    uint32_t pending_skip;
+    int input_finished;
+    SipDecoderSourceManager source_mgr;
     int initialized;
     int header_read;
     int decompressing;
-} SipDecoder;
+};
 
 // ============================================================================
 // Encoder State
 // ============================================================================
 
+typedef struct SipEncoder SipEncoder;
+
 typedef struct {
+    struct jpeg_destination_mgr pub;
+    SipEncoder *owner;
+} SipEncoderDestinationManager;
+
+struct SipEncoder {
     struct jpeg_compress_struct cinfo;
     struct jpeg_error_mgr jerr;
-    unsigned char *output_buffer;
-    unsigned long output_size;
+    uint8_t *output_buffer;
+    uint32_t output_capacity;
+    uint32_t total_output_size;
+    uint32_t queued_output_bytes;
+    SipChunk *output_head;
+    SipChunk *output_tail;
     JSAMPROW row_buffer;
+    SipEncoderDestinationManager dest_mgr;
     int initialized;
     int compressing;
-} SipEncoder;
+};
 
 // ============================================================================
 // Error Handling
@@ -60,6 +93,204 @@ const char* sip_get_error() {
 }
 
 // ============================================================================
+// Shared Helpers
+// ============================================================================
+
+static void sip_free_chunks(SipChunk **head, SipChunk **tail) {
+    SipChunk *chunk = *head;
+    while (chunk) {
+        SipChunk *next = chunk->next;
+        free(chunk->data);
+        free(chunk);
+        chunk = next;
+    }
+
+    *head = NULL;
+    *tail = NULL;
+}
+
+// ============================================================================
+// JPEG Decoder Streaming Source Manager
+// ============================================================================
+
+static void sip_decoder_drop_active_chunk(SipDecoder *dec) {
+    if (dec->active_input_chunk && dec->source_mgr.pub.bytes_in_buffer == 0) {
+        free(dec->active_input_chunk->data);
+        free(dec->active_input_chunk);
+        dec->active_input_chunk = NULL;
+        dec->source_mgr.pub.next_input_byte = NULL;
+    }
+}
+
+static int sip_decoder_activate_chunk(SipDecoder *dec) {
+    sip_decoder_drop_active_chunk(dec);
+
+    if (dec->active_input_chunk) {
+        return 1;
+    }
+
+    if (!dec->input_head) {
+        return 0;
+    }
+
+    dec->active_input_chunk = dec->input_head;
+    dec->input_head = dec->input_head->next;
+    if (!dec->input_head) {
+        dec->input_tail = NULL;
+    }
+
+    dec->active_input_chunk->next = NULL;
+    dec->queued_input_bytes -= dec->active_input_chunk->size;
+    dec->source_mgr.pub.next_input_byte = dec->active_input_chunk->data;
+    dec->source_mgr.pub.bytes_in_buffer = dec->active_input_chunk->size;
+    return 1;
+}
+
+static void sip_decoder_init_source(j_decompress_ptr cinfo) {
+    SipDecoderSourceManager *src = (SipDecoderSourceManager *)cinfo->src;
+    src->pub.bytes_in_buffer = 0;
+    src->pub.next_input_byte = NULL;
+}
+
+static boolean sip_decoder_fill_input_buffer(j_decompress_ptr cinfo) {
+    SipDecoderSourceManager *src = (SipDecoderSourceManager *)cinfo->src;
+    SipDecoder *dec = src->owner;
+
+    if (src->pub.bytes_in_buffer == 0 && !sip_decoder_activate_chunk(dec)) {
+        if (dec->input_finished) {
+            src->eoi_buffer[0] = (JOCTET)0xFF;
+            src->eoi_buffer[1] = (JOCTET)JPEG_EOI;
+            src->pub.next_input_byte = src->eoi_buffer;
+            src->pub.bytes_in_buffer = 2;
+        } else {
+            return FALSE;
+        }
+    }
+
+    while (dec->pending_skip > 0) {
+        if (src->pub.bytes_in_buffer == 0) {
+            if (sip_decoder_activate_chunk(dec)) {
+                continue;
+            }
+
+            if (dec->input_finished) {
+                src->eoi_buffer[0] = (JOCTET)0xFF;
+                src->eoi_buffer[1] = (JOCTET)JPEG_EOI;
+                src->pub.next_input_byte = src->eoi_buffer;
+                src->pub.bytes_in_buffer = 2;
+            } else {
+                return FALSE;
+            }
+        }
+
+        if (dec->pending_skip >= src->pub.bytes_in_buffer) {
+            dec->pending_skip -= (uint32_t)src->pub.bytes_in_buffer;
+            src->pub.next_input_byte += src->pub.bytes_in_buffer;
+            src->pub.bytes_in_buffer = 0;
+            sip_decoder_drop_active_chunk(dec);
+            continue;
+        }
+
+        src->pub.next_input_byte += dec->pending_skip;
+        src->pub.bytes_in_buffer -= dec->pending_skip;
+        dec->pending_skip = 0;
+    }
+
+    return TRUE;
+}
+
+static void sip_decoder_skip_input_data(j_decompress_ptr cinfo, long num_bytes) {
+    if (num_bytes <= 0) {
+        return;
+    }
+
+    while (num_bytes > (long)cinfo->src->bytes_in_buffer) {
+        num_bytes -= (long)cinfo->src->bytes_in_buffer;
+        cinfo->src->bytes_in_buffer = 0;
+
+        if (!sip_decoder_fill_input_buffer(cinfo)) {
+            SipDecoderSourceManager *src = (SipDecoderSourceManager *)cinfo->src;
+            src->owner->pending_skip += (uint32_t)num_bytes;
+            return;
+        }
+    }
+
+    cinfo->src->next_input_byte += num_bytes;
+    cinfo->src->bytes_in_buffer -= (size_t)num_bytes;
+}
+
+static void sip_decoder_term_source(j_decompress_ptr cinfo) {
+    (void)cinfo;
+}
+
+// ============================================================================
+// JPEG Encoder Streaming Destination Manager
+// ============================================================================
+
+static int sip_encoder_queue_chunk(SipEncoder *enc, const uint8_t *data, uint32_t size) {
+    if (!size) {
+        return 0;
+    }
+
+    SipChunk *chunk = (SipChunk *)calloc(1, sizeof(SipChunk));
+    if (!chunk) {
+        snprintf(last_error, sizeof(last_error), "Failed to allocate encoder chunk");
+        return -1;
+    }
+
+    chunk->data = (uint8_t *)malloc(size);
+    if (!chunk->data) {
+        free(chunk);
+        snprintf(last_error, sizeof(last_error), "Failed to allocate encoder chunk bytes");
+        return -1;
+    }
+
+    memcpy(chunk->data, data, size);
+    chunk->size = size;
+
+    if (enc->output_tail) {
+        enc->output_tail->next = chunk;
+    } else {
+        enc->output_head = chunk;
+    }
+    enc->output_tail = chunk;
+    enc->queued_output_bytes += size;
+    enc->total_output_size += size;
+
+    return 0;
+}
+
+static void sip_encoder_init_destination(j_compress_ptr cinfo) {
+    SipEncoderDestinationManager *dest = (SipEncoderDestinationManager *)cinfo->dest;
+    SipEncoder *enc = dest->owner;
+    dest->pub.next_output_byte = enc->output_buffer;
+    dest->pub.free_in_buffer = enc->output_capacity;
+}
+
+static boolean sip_encoder_empty_output_buffer(j_compress_ptr cinfo) {
+    SipEncoderDestinationManager *dest = (SipEncoderDestinationManager *)cinfo->dest;
+    SipEncoder *enc = dest->owner;
+
+    if (sip_encoder_queue_chunk(enc, enc->output_buffer, enc->output_capacity) != 0) {
+        return FALSE;
+    }
+
+    dest->pub.next_output_byte = enc->output_buffer;
+    dest->pub.free_in_buffer = enc->output_capacity;
+    return TRUE;
+}
+
+static void sip_encoder_term_destination(j_compress_ptr cinfo) {
+    SipEncoderDestinationManager *dest = (SipEncoderDestinationManager *)cinfo->dest;
+    SipEncoder *enc = dest->owner;
+    uint32_t used = enc->output_capacity - (uint32_t)dest->pub.free_in_buffer;
+
+    if (used > 0) {
+        sip_encoder_queue_chunk(enc, enc->output_buffer, used);
+    }
+}
+
+// ============================================================================
 // Decoder Functions
 // ============================================================================
 
@@ -75,32 +306,92 @@ SipDecoder* sip_decoder_create() {
     dec->jerr.error_exit = sip_error_exit;
 
     jpeg_create_decompress(&dec->cinfo);
+    dec->source_mgr.owner = dec;
+    dec->source_mgr.pub.init_source = sip_decoder_init_source;
+    dec->source_mgr.pub.fill_input_buffer = sip_decoder_fill_input_buffer;
+    dec->source_mgr.pub.skip_input_data = sip_decoder_skip_input_data;
+    dec->source_mgr.pub.resync_to_restart = jpeg_resync_to_restart;
+    dec->source_mgr.pub.term_source = sip_decoder_term_source;
+    dec->source_mgr.pub.bytes_in_buffer = 0;
+    dec->source_mgr.pub.next_input_byte = NULL;
+    dec->cinfo.src = (struct jpeg_source_mgr *)&dec->source_mgr;
     dec->initialized = 1;
 
     return dec;
 }
 
 /**
- * Set input data for decoder
+ * Push more input bytes into the decoder
  */
 EMSCRIPTEN_KEEPALIVE
-int sip_decoder_set_source(SipDecoder* dec, const uint8_t* data, uint32_t size) {
+int sip_decoder_push_input(SipDecoder* dec, const uint8_t* data, uint32_t size, int is_final) {
     if (!dec || !dec->initialized) return -1;
 
-    jpeg_mem_src(&dec->cinfo, data, size);
+    if (size > 0) {
+        SipChunk *chunk = (SipChunk *)calloc(1, sizeof(SipChunk));
+        if (!chunk) {
+            snprintf(last_error, sizeof(last_error), "Failed to allocate decoder input chunk");
+            return -1;
+        }
+
+        chunk->data = (uint8_t *)malloc(size);
+        if (!chunk->data) {
+            free(chunk);
+            snprintf(last_error, sizeof(last_error), "Failed to allocate decoder input bytes");
+            return -1;
+        }
+
+        memcpy(chunk->data, data, size);
+        chunk->size = size;
+
+        if (dec->input_tail) {
+            dec->input_tail->next = chunk;
+        } else {
+            dec->input_head = chunk;
+        }
+
+        dec->input_tail = chunk;
+        dec->queued_input_bytes += size;
+    }
+
+    if (is_final) {
+        dec->input_finished = 1;
+    }
+
     return 0;
 }
 
 /**
+ * Set full input data for decoder (buffered compatibility helper)
+ */
+EMSCRIPTEN_KEEPALIVE
+int sip_decoder_set_source(SipDecoder* dec, const uint8_t* data, uint32_t size) {
+    if (!dec || !dec->initialized) return -1;
+    sip_free_chunks(&dec->input_head, &dec->input_tail);
+    sip_decoder_drop_active_chunk(dec);
+    dec->queued_input_bytes = 0;
+    dec->input_finished = 0;
+    dec->pending_skip = 0;
+    dec->source_mgr.pub.bytes_in_buffer = 0;
+    dec->source_mgr.pub.next_input_byte = NULL;
+    return sip_decoder_push_input(dec, data, size, 1);
+}
+
+/**
  * Read JPEG header and return dimensions
- * Returns: 0 on success, -1 on error
+ * Returns: 0 on success, 1 if more input is needed, -1 on error
  * After success, use sip_decoder_get_width/height to get dimensions
  */
 EMSCRIPTEN_KEEPALIVE
 int sip_decoder_read_header(SipDecoder* dec) {
     if (!dec || !dec->initialized) return -1;
 
-    if (jpeg_read_header(&dec->cinfo, TRUE) != JPEG_HEADER_OK) {
+    int result = jpeg_read_header(&dec->cinfo, TRUE);
+    if (result == JPEG_SUSPENDED) {
+        return 1;
+    }
+
+    if (result != JPEG_HEADER_OK) {
         return -1;
     }
 
@@ -171,12 +462,13 @@ uint32_t sip_decoder_get_output_height(SipDecoder* dec) {
 EMSCRIPTEN_KEEPALIVE
 int sip_decoder_start(SipDecoder* dec) {
     if (!dec || !dec->header_read) return -1;
+    if (dec->decompressing) return 0;
 
     // Force RGB output
     dec->cinfo.out_color_space = JCS_RGB;
 
     if (!jpeg_start_decompress(&dec->cinfo)) {
-        return -1;
+        return 1;
     }
 
     // Allocate row buffer
@@ -202,7 +494,7 @@ uint8_t* sip_decoder_get_row_buffer(SipDecoder* dec) {
 
 /**
  * Read one scanline into internal buffer
- * Returns: 1 if scanline was read, 0 if done, -1 on error
+ * Returns: 1 if scanline was read, 0 if done, 2 if more input is needed, -1 on error
  */
 EMSCRIPTEN_KEEPALIVE
 int sip_decoder_read_scanline(SipDecoder* dec) {
@@ -215,7 +507,11 @@ int sip_decoder_read_scanline(SipDecoder* dec) {
     JSAMPROW rows[1] = { dec->row_buffer };
     int lines = jpeg_read_scanlines(&dec->cinfo, rows, 1);
 
-    return lines > 0 ? 1 : 0;
+    if (lines > 0) {
+        return 1;
+    }
+
+    return 2;
 }
 
 /**
@@ -235,7 +531,9 @@ int sip_decoder_finish(SipDecoder* dec) {
     if (!dec) return -1;
 
     if (dec->decompressing) {
-        jpeg_finish_decompress(&dec->cinfo);
+        if (!jpeg_finish_decompress(&dec->cinfo)) {
+            return 1;
+        }
         dec->decompressing = 0;
     }
 
@@ -247,6 +545,12 @@ int sip_decoder_finish(SipDecoder* dec) {
     return 0;
 }
 
+EMSCRIPTEN_KEEPALIVE
+uint32_t sip_decoder_get_buffered_input_size(SipDecoder* dec) {
+    if (!dec) return 0;
+    return dec->queued_input_bytes + (uint32_t)dec->source_mgr.pub.bytes_in_buffer;
+}
+
 /**
  * Destroy decoder and free all resources
  */
@@ -255,6 +559,10 @@ void sip_decoder_destroy(SipDecoder* dec) {
     if (!dec) return;
 
     sip_decoder_finish(dec);
+
+    sip_free_chunks(&dec->input_head, &dec->input_tail);
+    sip_decoder_drop_active_chunk(dec);
+    dec->queued_input_bytes = 0;
 
     if (dec->initialized) {
         jpeg_destroy_decompress(&dec->cinfo);
@@ -520,10 +828,22 @@ EMSCRIPTEN_KEEPALIVE
 int sip_encoder_init(SipEncoder* enc, uint32_t width, uint32_t height, int quality) {
     if (!enc || !enc->initialized) return -1;
 
-    // Set up memory destination
-    enc->output_buffer = NULL;
-    enc->output_size = 0;
-    jpeg_mem_dest(&enc->cinfo, &enc->output_buffer, &enc->output_size);
+    enc->output_capacity = 16384;
+    enc->output_buffer = (uint8_t *)malloc(enc->output_capacity);
+    if (!enc->output_buffer) {
+        snprintf(last_error, sizeof(last_error), "Failed to allocate encoder output buffer");
+        return -1;
+    }
+
+    enc->queued_output_bytes = 0;
+    enc->total_output_size = 0;
+    sip_free_chunks(&enc->output_head, &enc->output_tail);
+
+    enc->dest_mgr.owner = enc;
+    enc->dest_mgr.pub.init_destination = sip_encoder_init_destination;
+    enc->dest_mgr.pub.empty_output_buffer = sip_encoder_empty_output_buffer;
+    enc->dest_mgr.pub.term_destination = sip_encoder_term_destination;
+    enc->cinfo.dest = (struct jpeg_destination_mgr *)&enc->dest_mgr;
 
     // Set image parameters
     enc->cinfo.image_width = width;
@@ -615,8 +935,8 @@ int sip_encoder_finish(SipEncoder* enc) {
  */
 EMSCRIPTEN_KEEPALIVE
 uint8_t* sip_encoder_get_output(SipEncoder* enc) {
-    if (!enc) return NULL;
-    return enc->output_buffer;
+    (void)enc;
+    return NULL;
 }
 
 /**
@@ -625,7 +945,41 @@ uint8_t* sip_encoder_get_output(SipEncoder* enc) {
 EMSCRIPTEN_KEEPALIVE
 uint32_t sip_encoder_get_output_size(SipEncoder* enc) {
     if (!enc) return 0;
-    return (uint32_t)enc->output_size;
+    return enc->total_output_size;
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint8_t* sip_encoder_peek_chunk_data(SipEncoder* enc) {
+    if (!enc || !enc->output_head) return NULL;
+    return enc->output_head->data;
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t sip_encoder_peek_chunk_size(SipEncoder* enc) {
+    if (!enc || !enc->output_head) return 0;
+    return enc->output_head->size;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int sip_encoder_pop_chunk(SipEncoder* enc) {
+    if (!enc || !enc->output_head) return 0;
+
+    SipChunk *chunk = enc->output_head;
+    enc->output_head = chunk->next;
+    if (!enc->output_head) {
+        enc->output_tail = NULL;
+    }
+
+    enc->queued_output_bytes -= chunk->size;
+    free(chunk->data);
+    free(chunk);
+    return 1;
+}
+
+EMSCRIPTEN_KEEPALIVE
+uint32_t sip_encoder_get_buffered_output_size(SipEncoder* enc) {
+    if (!enc) return 0;
+    return enc->queued_output_bytes;
 }
 
 /**
@@ -649,6 +1003,10 @@ void sip_encoder_destroy(SipEncoder* enc) {
         free(enc->output_buffer);
         enc->output_buffer = NULL;
     }
+
+    sip_free_chunks(&enc->output_head, &enc->output_tail);
+    enc->queued_output_bytes = 0;
+    enc->total_output_size = 0;
 
     if (enc->initialized) {
         jpeg_destroy_compress(&enc->cinfo);

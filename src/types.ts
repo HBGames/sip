@@ -4,47 +4,76 @@
 export type ImageFormat = 'jpeg' | 'png' | 'webp' | 'avif' | 'unknown';
 
 /**
- * Result from probing an image's format and dimensions
+ * Image metadata discovered during inspection
  */
-export interface ProbeResult {
-  /** Detected format */
+export interface ImageInfo {
   format: ImageFormat;
-  /** Image width in pixels */
   width: number;
-  /** Image height in pixels */
   height: number;
-  /** Whether the image has an alpha channel */
   hasAlpha: boolean;
 }
 
 /**
- * Options for image processing
+ * Backward-compatible alias for callers that still import ProbeResult internally.
  */
-export interface ProcessOptions {
-  /** Maximum output width */
-  maxWidth?: number;
-  /** Maximum output height */
-  maxHeight?: number;
-  /** Target output size in bytes (quality will be reduced to achieve this) */
-  maxBytes?: number;
-  /** JPEG quality (1-100, default: 85) */
+export type ProbeResult = ImageInfo;
+
+/**
+ * Byte-oriented inputs accepted by the new API.
+ */
+export type ByteInput =
+  | ArrayBuffer
+  | Uint8Array
+  | Blob
+  | Request
+  | Response
+  | ReadableStream<Uint8Array>
+  | AsyncIterable<Uint8Array>;
+
+export interface TransformOptions {
+  width?: number;
+  height?: number;
   quality?: number;
 }
 
 /**
- * Result from processing an image
+ * Internal/publicly returned reusable source after inspect().
+ * `open()` may only be called once for streamed inputs.
  */
-export interface ProcessResult {
-  /** Processed image data */
-  data: ArrayBuffer;
-  /** Output width */
+export interface InputSource {
+  readonly kind: 'bytes' | 'stream';
+  readonly replayable: boolean;
+  readonly formatHint?: ImageFormat;
+  readonly byteLength?: number;
+  readonly headerBytes: Uint8Array<ArrayBufferLike>;
+  open(): AsyncIterable<Uint8Array>;
+}
+
+export interface TransformStats {
+  peakPipelineBytes: number;
+  peakCodecBytes: number;
+  peakBufferedInputBytes: number;
+  peakBufferedOutputBytes: number;
+  bytesIn: number;
+  bytesOut: number;
+  notes: string[];
+}
+
+export interface EncodedImageInfo {
   width: number;
-  /** Output height */
   height: number;
-  /** Output MIME type (always image/jpeg) */
   mimeType: 'image/jpeg';
-  /** Original format that was converted */
-  originalFormat: ImageFormat;
+  originalFormat: Exclude<ImageFormat, 'unknown'>;
+}
+
+export interface EncodedImage extends AsyncIterable<Uint8Array> {
+  readonly info: Promise<EncodedImageInfo>;
+  readonly stats: Promise<TransformStats>;
+}
+
+export interface InspectResult {
+  info: ImageInfo;
+  source: InputSource;
 }
 
 /**
@@ -57,6 +86,37 @@ export interface Scanline {
   width: number;
   /** Y position in the image (0-indexed) */
   y: number;
+}
+
+export interface PixelStream extends AsyncIterable<Scanline> {
+  readonly info: Promise<{
+    width: number;
+    height: number;
+    originalFormat: Exclude<ImageFormat, 'unknown'>;
+  }>;
+  readonly stats?: Promise<TransformStats>;
+}
+
+/**
+ * Legacy process options retained for a small amount of internal compatibility while
+ * the old files remain in the tree.
+ */
+export interface ProcessOptions {
+  maxWidth?: number;
+  maxHeight?: number;
+  maxBytes?: number;
+  quality?: number;
+}
+
+/**
+ * Legacy process result retained for internal compatibility.
+ */
+export interface ProcessResult {
+  data: ArrayBuffer;
+  width: number;
+  height: number;
+  mimeType: 'image/jpeg';
+  originalFormat: ImageFormat;
 }
 
 /**

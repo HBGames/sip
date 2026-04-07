@@ -1,0 +1,3 @@
+patchedDependencies:
+  '@jsquash/avif': patches/@jsquash__avif.patch
+  '@jsquash/webp': patches/@jsquash__webp.patch

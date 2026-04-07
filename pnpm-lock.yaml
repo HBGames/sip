@@ -4,16 +4,24 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+patchedDependencies:
+  '@jsquash/avif':
+    hash: e3a9d1e859693bd7e96cd597902ca94bb57ef4b75c9163bcac1c7cf3f2af0b47
+    path: patches/@jsquash__avif.patch
+  '@jsquash/webp':
+    hash: 6dfddbb12baecc8cf240703ae195a17b22bf7d38ab1011a5ae88e1711ad02469
+    path: patches/@jsquash__webp.patch
+
 importers:
 
   .:
     dependencies:
       '@jsquash/avif':
         specifier: ^2.1.1
-        version: 2.1.1
+        version: 2.1.1(patch_hash=e3a9d1e859693bd7e96cd597902ca94bb57ef4b75c9163bcac1c7cf3f2af0b47)
       '@jsquash/webp':
         specifier: ^1.5.0
-        version: 1.5.0
+        version: 1.5.0(patch_hash=6dfddbb12baecc8cf240703ae195a17b22bf7d38ab1011a5ae88e1711ad02469)
     devDependencies:
       '@arrow-js/core':
         specifier: ^1.0.6
@@ -23,7 +31,7 @@ importers:
         version: 1.0.6
       '@cloudflare/vite-plugin':
         specifier: ^1.31.0
-        version: 1.31.0(vite@8.0.5(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)(@types/node@22.19.17)(esbuild@0.27.7))(workerd@1.20251210.0)(wrangler@4.80.0(@cloudflare/workers-types@4.20260405.1))
+        version: 1.31.0(vite@8.0.5(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)(@types/node@22.19.17)(esbuild@0.27.7))(workerd@1.20260401.1)(wrangler@4.80.0(@cloudflare/workers-types@4.20260405.1))
       '@cloudflare/vitest-pool-workers':
         specifier: ^0.10.14
         version: 0.10.15(@cloudflare/workers-types@4.20260405.1)(@vitest/runner@2.1.9)(@vitest/snapshot@2.1.9)(vitest@2.1.9(@types/node@22.19.17)(jsdom@26.1.0)(lightningcss@1.32.0))
@@ -2303,12 +2311,6 @@ snapshots:
 
   '@cloudflare/kv-asset-handler@0.4.2': {}
 
-  '@cloudflare/unenv-preset@2.16.0(unenv@2.0.0-rc.24)(workerd@1.20251210.0)':
-    dependencies:
-      unenv: 2.0.0-rc.24
-    optionalDependencies:
-      workerd: 1.20251210.0
-
   '@cloudflare/unenv-preset@2.16.0(unenv@2.0.0-rc.24)(workerd@1.20260401.1)':
     dependencies:
       unenv: 2.0.0-rc.24
@@ -2321,9 +2323,9 @@ snapshots:
     optionalDependencies:
       workerd: 1.20251210.0
 
-  '@cloudflare/vite-plugin@1.31.0(vite@8.0.5(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)(@types/node@22.19.17)(esbuild@0.27.7))(workerd@1.20251210.0)(wrangler@4.80.0(@cloudflare/workers-types@4.20260405.1))':
+  '@cloudflare/vite-plugin@1.31.0(vite@8.0.5(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)(@types/node@22.19.17)(esbuild@0.27.7))(workerd@1.20260401.1)(wrangler@4.80.0(@cloudflare/workers-types@4.20260405.1))':
     dependencies:
-      '@cloudflare/unenv-preset': 2.16.0(unenv@2.0.0-rc.24)(workerd@1.20251210.0)
+      '@cloudflare/unenv-preset': 2.16.0(unenv@2.0.0-rc.24)(workerd@1.20260401.1)
       miniflare: 4.20260401.0
       unenv: 2.0.0-rc.24
       vite: 8.0.5(@emnapi/core@1.9.2)(@emnapi/runtime@1.9.2)(@types/node@22.19.17)(esbuild@0.27.7)
@@ -2916,11 +2918,11 @@ snapshots:
       '@jridgewell/resolve-uri': 3.1.2
       '@jridgewell/sourcemap-codec': 1.5.5
 
-  '@jsquash/avif@2.1.1':
+  '@jsquash/avif@2.1.1(patch_hash=e3a9d1e859693bd7e96cd597902ca94bb57ef4b75c9163bcac1c7cf3f2af0b47)':
     dependencies:
       wasm-feature-detect: 1.8.0
 
-  '@jsquash/webp@1.5.0':
+  '@jsquash/webp@1.5.0(patch_hash=6dfddbb12baecc8cf240703ae195a17b22bf7d38ab1011a5ae88e1711ad02469)':
     dependencies:
       wasm-feature-detect: 1.8.0
 

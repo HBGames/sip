@@ -1,16 +1,35 @@
-// @ts-nocheck — dist/sip.js is an Emscripten build, not typed
+// @ts-nocheck - workerd loads generated wasm assets dynamically
 import createSipModule from '../dist/sip.js'
 import sipWasm from '../dist/sip.wasm'
-import { process as sipProcess } from '../src/pipeline'
-import { probe } from '../src/probe'
-import { initStreaming } from '../src/streaming'
-import { getWasmModule, isWasmAvailable } from '../src/wasm/loader'
+import avifDecoderWasm from '@jsquash/avif/codec/dec/avif_dec.wasm'
+import webpDecoderWasm from '@jsquash/webp/codec/dec/webp_dec.wasm'
+import { collect, inspect, ready, transform } from '../src'
 
 interface Env {
   ASSETS: Fetcher
 }
 
-// Register the WASM loader that uses the statically imported WASM module
+const EXPOSE_HEADERS = [
+  'X-Input-Format',
+  'X-Input-Width',
+  'X-Input-Height',
+  'X-Input-Bytes',
+  'X-Output-Width',
+  'X-Output-Height',
+  'X-Output-Bytes',
+  'X-Peak-Pipeline-Bytes',
+  'X-Peak-Codec-Bytes',
+  'X-Peak-Buffered-Input-Bytes',
+  'X-Peak-Buffered-Output-Bytes',
+  'X-Elapsed-Ms',
+  'X-Stats-Notes',
+].join(', ')
+
+globalThis.__SIP_CODEC_WASM__ = {
+  avif: avifDecoderWasm,
+  webp: webpDecoderWasm,
+}
+
 globalThis.__SIP_WASM_LOADER__ = async () => {
   return createSipModule({
     instantiateWasm(
@@ -25,84 +44,77 @@ globalThis.__SIP_WASM_LOADER__ = async () => {
   })
 }
 
-let streamingReady = false
+let boot: Promise<void> | null = null
+
+function ensureReady() {
+  if (!boot) {
+    boot = ready()
+  }
+
+  return boot
+}
+
+function getTransformOptions(url: URL) {
+  return {
+    width: Number(url.searchParams.get('width')) || undefined,
+    height: Number(url.searchParams.get('height')) || undefined,
+    quality: Number(url.searchParams.get('quality')) || undefined,
+  }
+}
 
 export default {
   async fetch(request: Request, env: Env) {
     const url = new URL(request.url)
-
-    if (url.pathname === '/api/process' && request.method === 'POST') {
-      return handleProcess(request)
+    if (url.pathname !== '/api/process') {
+      return env.ASSETS.fetch(request)
     }
 
-    return env.ASSETS.fetch(request)
+    if (request.method !== 'POST') {
+      return Response.json(
+        { error: 'Use POST with a raw image body.' },
+        { status: 405 }
+      )
+    }
+
+    await ensureReady()
+    return handleProcess(request, url)
   },
 } satisfies ExportedHandler<Env>
 
-async function handleProcess(request: Request): Promise<Response> {
+async function handleProcess(request: Request, url: URL): Promise<Response> {
+  const startedAt = performance.now()
+
   try {
-    const formData = await request.formData()
-    const file = formData.get('image') as File | null
-    const maxWidth = Number(formData.get('maxWidth')) || 2048
-    const maxHeight = Number(formData.get('maxHeight')) || 2048
-    const quality = Number(formData.get('quality')) || 85
-
-    if (!file) {
-      return Response.json({ error: 'No image provided' }, { status: 400 })
-    }
-
-    const inputBuffer = await file.arrayBuffer()
-    const inputBytes = inputBuffer.byteLength
-
-    const probeInfo = probe(inputBuffer)
-    if (probeInfo.format === 'unknown') {
-      return Response.json({ error: 'Unsupported image format' }, { status: 415 })
-    }
-
-    // Theoretical memory: full RGBA decode of original dimensions
-    const theoreticalMemory = probeInfo.width * probeInfo.height * 4
-
-    if (!streamingReady) {
-      streamingReady = await initStreaming()
-    }
-
-    // Measure actual WASM memory before processing
-    let wasmMemBefore = 0
-    if (isWasmAvailable()) {
-      wasmMemBefore = getWasmModule().HEAPU8.buffer.byteLength
-    }
-
-    const startTime = performance.now()
-    const result = await sipProcess(inputBuffer, { maxWidth, maxHeight, quality })
-    const elapsed = performance.now() - startTime
-
-    // Measure actual WASM memory after processing (WASM memory only grows, so
-    // the post-processing size reflects the peak allocation during the call)
-    let sipPeakMemory = theoreticalMemory
-    if (isWasmAvailable()) {
-      const wasmMemAfter = getWasmModule().HEAPU8.buffer.byteLength
-      sipPeakMemory = wasmMemAfter
-    }
+    const contentLength = Number(request.headers.get('content-length') || 0)
+    const { info, source } = await inspect(request)
+    const image = transform(source, getTransformOptions(url))
+    const result = await collect(image)
+    const elapsedMs = Math.round(performance.now() - startedAt)
 
     return new Response(result.data, {
       headers: {
-        'Content-Type': result.mimeType,
-        'X-Input-Width': String(probeInfo.width),
-        'X-Input-Height': String(probeInfo.height),
-        'X-Input-Format': probeInfo.format,
-        'X-Input-Bytes': String(inputBytes),
-        'X-Output-Width': String(result.width),
-        'X-Output-Height': String(result.height),
-        'X-Output-Bytes': String(result.data.byteLength),
-        'X-Theoretical-Memory': String(theoreticalMemory),
-        'X-Sip-Peak-Memory': String(sipPeakMemory),
-        'X-Processing-Ms': String(Math.round(elapsed)),
-        'X-Streaming': String(streamingReady),
-        'Access-Control-Expose-Headers': 'X-Input-Width, X-Input-Height, X-Input-Format, X-Input-Bytes, X-Output-Width, X-Output-Height, X-Output-Bytes, X-Theoretical-Memory, X-Sip-Peak-Memory, X-Processing-Ms, X-Streaming',
+        'Content-Type': result.info.mimeType,
+        'Cache-Control': 'no-store',
+        'Access-Control-Expose-Headers': EXPOSE_HEADERS,
+        'X-Input-Format': info.format,
+        'X-Input-Width': String(info.width),
+        'X-Input-Height': String(info.height),
+        'X-Input-Bytes': String(result.stats.bytesIn || contentLength),
+        'X-Output-Width': String(result.info.width),
+        'X-Output-Height': String(result.info.height),
+        'X-Output-Bytes': String(result.stats.bytesOut),
+        'X-Peak-Pipeline-Bytes': String(result.stats.peakPipelineBytes),
+        'X-Peak-Codec-Bytes': String(result.stats.peakCodecBytes),
+        'X-Peak-Buffered-Input-Bytes': String(result.stats.peakBufferedInputBytes),
+        'X-Peak-Buffered-Output-Bytes': String(result.stats.peakBufferedOutputBytes),
+        'X-Elapsed-Ms': String(elapsedMs),
+        'X-Stats-Notes': result.stats.notes.join(','),
       },
     })
-  } catch (err: unknown) {
-    const message = err instanceof Error ? err.message : 'Processing failed'
-    return Response.json({ error: message }, { status: 500 })
+  } catch (error) {
+    const message = error instanceof Error ? error.message : 'Processing failed'
+    const status = /Unsupported image format/i.test(message) ? 415 : 500
+
+    return Response.json({ error: message }, { status })
   }
 }

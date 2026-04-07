@@ -1,3 +1,145 @@
+// src/decoders/simple.ts
+function isCloudflareWorker() {
+  const cacheStorage = globalThis.caches;
+  return typeof cacheStorage !== "undefined" && typeof cacheStorage.default !== "undefined";
+}
+function getPreloadedCodecBinary(format) {
+  const globalValue = globalThis.__SIP_CODEC_WASM__;
+  if (!globalValue || typeof globalValue !== "object") {
+    return null;
+  }
+  const formatValue = globalValue[format];
+  if (formatValue instanceof ArrayBuffer || formatValue instanceof Uint8Array || formatValue instanceof WebAssembly.Module) {
+    return formatValue;
+  }
+  return null;
+}
+function isNode() {
+  if (isCloudflareWorker()) {
+    return false;
+  }
+  return typeof process !== "undefined" && process.versions != null && process.versions.node != null;
+}
+async function initCodecWithBinary(initFn, wasmSource) {
+  if (wasmSource instanceof WebAssembly.Module) {
+    await initFn(wasmSource);
+    return;
+  }
+  let buffer;
+  if (wasmSource instanceof Uint8Array) {
+    const copy = new Uint8Array(wasmSource.byteLength);
+    copy.set(wasmSource);
+    buffer = copy.buffer;
+  } else {
+    buffer = wasmSource;
+  }
+  const wasmModule2 = await WebAssembly.compile(buffer);
+  await initFn(wasmModule2);
+}
+async function initCodecForNode(initFn, wasmPath) {
+  const { readFile } = await import('fs/promises');
+  const { createRequire } = await import('module');
+  const require2 = createRequire(import.meta.url);
+  const resolvedPath = require2.resolve(wasmPath);
+  const wasmBuffer = await readFile(resolvedPath);
+  const wasmModule2 = await WebAssembly.compile(wasmBuffer);
+  await initFn(wasmModule2);
+}
+var SimpleDecoder = class {
+  format;
+  supportsScanline = false;
+  supportsScaledDecode = false;
+  data;
+  width = 0;
+  height = 0;
+  hasAlpha = false;
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  decodeFn = null;
+  constructor(format, data) {
+    this.format = format;
+    this.data = data;
+  }
+  async init(data) {
+    this.data = data;
+    switch (this.format) {
+      case "avif": {
+        const { default: decode2, init } = await import('@jsquash/avif/decode.js');
+        const preloaded = getPreloadedCodecBinary("avif");
+        if (preloaded) {
+          await initCodecWithBinary(init, preloaded);
+        } else if (isNode()) {
+          await initCodecForNode(init, "@jsquash/avif/codec/dec/avif_dec.wasm");
+        }
+        this.decodeFn = decode2;
+        this.hasAlpha = true;
+        break;
+      }
+      case "webp": {
+        const { default: decode2, init } = await import('@jsquash/webp/decode.js');
+        const preloaded = getPreloadedCodecBinary("webp");
+        if (preloaded) {
+          await initCodecWithBinary(init, preloaded);
+        } else if (isNode()) {
+          await initCodecForNode(init, "@jsquash/webp/codec/dec/webp_dec.wasm");
+        }
+        this.decodeFn = decode2;
+        this.hasAlpha = true;
+        break;
+      }
+      case "jpeg":
+      case "png":
+        throw new Error(
+          `${this.format.toUpperCase()} requires native WASM decoder. Build the WASM module with \`pnpm build:wasm\` in the @standardagents/sip repo root.`
+        );
+      default:
+        throw new Error(`Unsupported format for SimpleDecoder: ${this.format}`);
+    }
+    const imageData = await this.decodeFn(this.data);
+    if (!imageData) {
+      throw new Error(`Failed to decode ${this.format} image`);
+    }
+    this.width = imageData.width;
+    this.height = imageData.height;
+    return {
+      width: this.width,
+      height: this.height,
+      hasAlpha: this.hasAlpha
+    };
+  }
+  async decode(_scaleFactor) {
+    if (!this.decodeFn) {
+      throw new Error("Decoder not initialized. Call init() first.");
+    }
+    const imageData = await this.decodeFn(this.data);
+    this.width = imageData.width;
+    this.height = imageData.height;
+    const rgba = new Uint8Array(imageData.data.buffer);
+    const rgb = new Uint8Array(this.width * this.height * 3);
+    let srcIdx = 0;
+    let dstIdx = 0;
+    const pixelCount = this.width * this.height;
+    for (let i = 0; i < pixelCount; i++) {
+      rgb[dstIdx++] = rgba[srcIdx++];
+      rgb[dstIdx++] = rgba[srcIdx++];
+      rgb[dstIdx++] = rgba[srcIdx++];
+      srcIdx++;
+    }
+    return {
+      pixels: rgb,
+      width: this.width,
+      height: this.height
+    };
+  }
+  dispose() {
+    this.decodeFn = null;
+  }
+};
+async function createDecoder(format, data) {
+  const decoder = new SimpleDecoder(format, data);
+  await decoder.init(data);
+  return decoder;
+}
+
 // src/probe.ts
 var MAGIC = {
   // JPEG: FFD8FF
@@ -158,120 +300,326 @@ function probe(input) {
     hasAlpha: result.hasAlpha ?? false
   };
 }
-function detectImageFormat(input) {
-  const data = input instanceof ArrayBuffer ? new Uint8Array(input) : input;
-  return detectFormat(data);
-}
 
-// src/decoders/simple.ts
-function isNode() {
-  return typeof process !== "undefined" && process.versions != null && process.versions.node != null;
+// src/input.ts
+var INSPECT_TARGETS = [64, 512, 4096, 16384, 65536, 262144];
+function sliceArrayBuffer(view) {
+  const copy = new Uint8Array(view.byteLength);
+  copy.set(view);
+  return copy.buffer;
 }
-async function initCodecForNode(initFn, wasmPath) {
-  const { readFile } = await import('fs/promises');
-  const { createRequire } = await import('module');
-  const require2 = createRequire(import.meta.url);
-  const resolvedPath = require2.resolve(wasmPath);
-  const wasmBuffer = await readFile(resolvedPath);
-  const wasmModule2 = await WebAssembly.compile(wasmBuffer);
-  await initFn(wasmModule2);
+function concatChunks(chunks, total) {
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return merged;
 }
-var SimpleDecoder = class {
-  format;
-  supportsScanline = false;
-  supportsScaledDecode = false;
-  data;
-  width = 0;
-  height = 0;
-  hasAlpha = false;
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  decodeFn = null;
-  constructor(format, data) {
-    this.format = format;
-    this.data = data;
+function normalizeChunk(chunk) {
+  if (chunk.byteOffset === 0 && chunk.byteLength === chunk.buffer.byteLength) {
+    const copy2 = new Uint8Array(chunk.byteLength);
+    copy2.set(chunk);
+    return copy2;
   }
-  async init(data) {
-    this.data = data;
-    switch (this.format) {
-      case "avif": {
-        const { default: decode, init } = await import('@jsquash/avif/decode.js');
-        if (isNode()) {
-          await initCodecForNode(init, "@jsquash/avif/codec/dec/avif_dec.wasm");
-        }
-        this.decodeFn = decode;
-        this.hasAlpha = true;
-        break;
+  const copy = new Uint8Array(chunk.byteLength);
+  copy.set(chunk);
+  return copy;
+}
+async function* iterateReadableStream(stream) {
+  const reader = stream.getReader();
+  try {
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) {
+        return;
       }
-      case "webp": {
-        const { default: decode, init } = await import('@jsquash/webp/decode.js');
-        if (isNode()) {
-          await initCodecForNode(init, "@jsquash/webp/codec/dec/webp_dec.wasm");
-        }
-        this.decodeFn = decode;
-        this.hasAlpha = true;
-        break;
+      if (value && value.byteLength > 0) {
+        yield normalizeChunk(value);
       }
-      case "jpeg":
-      case "png":
-        throw new Error(
-          `${this.format.toUpperCase()} requires native WASM decoder. Build the WASM module with \`pnpm build:wasm\` in the @standardagents/sip repo root.`
-        );
-      default:
-        throw new Error(`Unsupported format for SimpleDecoder: ${this.format}`);
     }
-    const imageData = await this.decodeFn(this.data);
-    if (!imageData) {
-      throw new Error(`Failed to decode ${this.format} image`);
-    }
-    this.width = imageData.width;
-    this.height = imageData.height;
-    return {
-      width: this.width,
-      height: this.height,
-      hasAlpha: this.hasAlpha
-    };
+  } finally {
+    reader.releaseLock();
   }
-  async decode(_scaleFactor) {
-    if (!this.decodeFn) {
-      throw new Error("Decoder not initialized. Call init() first.");
-    }
-    const imageData = await this.decodeFn(this.data);
-    this.width = imageData.width;
-    this.height = imageData.height;
-    const rgba = new Uint8Array(imageData.data.buffer);
-    const rgb = new Uint8Array(this.width * this.height * 3);
-    let srcIdx = 0;
-    let dstIdx = 0;
-    const pixelCount = this.width * this.height;
-    for (let i = 0; i < pixelCount; i++) {
-      rgb[dstIdx++] = rgba[srcIdx++];
-      rgb[dstIdx++] = rgba[srcIdx++];
-      rgb[dstIdx++] = rgba[srcIdx++];
-      srcIdx++;
-    }
-    return {
-      pixels: rgb,
-      width: this.width,
-      height: this.height
-    };
+}
+function getAsyncIterable(input) {
+  if (typeof input[Symbol.asyncIterator] === "function") {
+    return input;
   }
-  dispose() {
-    this.decodeFn = null;
+  return iterateReadableStream(input);
+}
+var BytesInputSource = class {
+  constructor(bytes, formatHint) {
+    this.bytes = bytes;
+    this.byteLength = bytes.byteLength;
+    this.headerBytes = bytes.subarray(0, Math.min(bytes.byteLength, INSPECT_TARGETS.at(-1)));
+    this.formatHint = formatHint;
+  }
+  bytes;
+  kind = "bytes";
+  replayable = true;
+  byteLength;
+  formatHint;
+  headerBytes;
+  done = true;
+  async ensureHeaderBytes(target) {
+    return this.bytes.subarray(0, Math.min(this.bytes.byteLength, target));
+  }
+  open() {
+    const bytes = this.bytes;
+    return (async function* openBytes() {
+      yield bytes;
+    })();
   }
 };
-async function createDecoder(format, data) {
-  const decoder = new SimpleDecoder(format, data);
-  await decoder.init(data);
-  return decoder;
+var StreamInputSource = class {
+  kind = "stream";
+  replayable = false;
+  byteLength;
+  formatHint;
+  iterator;
+  peekedChunks = [];
+  peekedBytes = 0;
+  opened = false;
+  exhausted = false;
+  headerBytes = new Uint8Array(0);
+  constructor(input, formatHint, byteLength) {
+    this.iterator = input[Symbol.asyncIterator]();
+    this.formatHint = formatHint;
+    this.byteLength = byteLength;
+  }
+  get done() {
+    return this.exhausted;
+  }
+  async ensureHeaderBytes(target) {
+    while (!this.exhausted && this.peekedBytes < target) {
+      const { value, done } = await this.iterator.next();
+      if (done) {
+        this.exhausted = true;
+        break;
+      }
+      if (value && value.byteLength > 0) {
+        const chunk = normalizeChunk(value);
+        this.peekedChunks.push(chunk);
+        this.peekedBytes += chunk.byteLength;
+      }
+    }
+    this.headerBytes = concatChunks(this.peekedChunks, this.peekedBytes);
+    return this.headerBytes;
+  }
+  open() {
+    if (this.opened) {
+      throw new Error("Input source can only be opened once");
+    }
+    this.opened = true;
+    const replay = this.peekedChunks.slice();
+    const iterator = this.iterator;
+    return (async function* openStream() {
+      for (const chunk of replay) {
+        yield chunk;
+      }
+      while (true) {
+        const { value, done } = await iterator.next();
+        if (done) {
+          return;
+        }
+        if (value && value.byteLength > 0) {
+          yield normalizeChunk(value);
+        }
+      }
+    })();
+  }
+};
+function isInputSource(value) {
+  return typeof value === "object" && value !== null && "open" in value && "headerBytes" in value;
+}
+function toUint8Array(input) {
+  return input instanceof Uint8Array ? normalizeChunk(input) : new Uint8Array(input);
+}
+async function sourceFromRequestLike(input) {
+  const contentType = input.headers.get("content-type") ?? "";
+  const hint = contentType.startsWith("image/") ? contentType.slice("image/".length) : void 0;
+  const lengthHeader = input.headers.get("content-length");
+  const byteLength = lengthHeader ? Number(lengthHeader) : void 0;
+  if (input.body) {
+    return new StreamInputSource(getAsyncIterable(input.body), hint, Number.isFinite(byteLength) ? byteLength : void 0);
+  }
+  const bytes = new Uint8Array(await input.arrayBuffer());
+  return new BytesInputSource(bytes, hint);
+}
+async function prepareInputSource(input) {
+  if (isInputSource(input)) {
+    return input;
+  }
+  if (input instanceof ArrayBuffer || input instanceof Uint8Array) {
+    return new BytesInputSource(toUint8Array(input));
+  }
+  if (typeof Blob !== "undefined" && input instanceof Blob) {
+    return new BytesInputSource(new Uint8Array(await input.arrayBuffer()));
+  }
+  if (typeof Request !== "undefined" && input instanceof Request) {
+    return sourceFromRequestLike(input);
+  }
+  if (typeof Response !== "undefined" && input instanceof Response) {
+    return sourceFromRequestLike(input);
+  }
+  if (typeof ReadableStream !== "undefined" && input instanceof ReadableStream) {
+    return new StreamInputSource(getAsyncIterable(input));
+  }
+  return new StreamInputSource(getAsyncIterable(input));
+}
+async function inspect(input) {
+  const source = await prepareInputSource(input);
+  const info = await inspectSource(source);
+  if (info.format === "unknown") {
+    throw new Error("Unsupported image format");
+  }
+  return { info, source };
+}
+async function inspectSource(source) {
+  let best = probe(source.headerBytes);
+  if (best.format !== "unknown") {
+    return best;
+  }
+  for (const target of INSPECT_TARGETS) {
+    const bytes = await source.ensureHeaderBytes(target);
+    best = probe(bytes);
+    if (best.format !== "unknown") {
+      return best;
+    }
+  }
+  if (source.headerBytes.byteLength === 0) {
+    return { format: "unknown", width: 0, height: 0, hasAlpha: false };
+  }
+  return probe(source.headerBytes);
+}
+async function collectSourceBytes(source) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of source.open()) {
+    chunks.push(chunk);
+    total += chunk.byteLength;
+  }
+  return concatChunks(chunks, total);
+}
+function asArrayBuffer(bytes) {
+  return sliceArrayBuffer(bytes);
+}
+
+// src/resize.ts
+function createResizeState(srcWidth, srcHeight, dstWidth, dstHeight) {
+  return {
+    srcWidth,
+    srcHeight,
+    dstWidth,
+    dstHeight,
+    bufferA: null,
+    bufferB: null,
+    bufferAY: -1,
+    bufferBY: -1,
+    currentOutputY: 0
+  };
+}
+function resizeRowHorizontal(src, srcWidth, dstWidth) {
+  const dst = new Uint8Array(dstWidth * 3);
+  const xScale = srcWidth / dstWidth;
+  for (let dstX = 0; dstX < dstWidth; dstX++) {
+    const srcXFloat = dstX * xScale;
+    const srcX0 = Math.floor(srcXFloat);
+    const srcX1 = Math.min(srcX0 + 1, srcWidth - 1);
+    const t = srcXFloat - srcX0;
+    const invT = 1 - t;
+    const src0 = srcX0 * 3;
+    const src1 = srcX1 * 3;
+    const dstOffset = dstX * 3;
+    dst[dstOffset] = Math.round(src[src0] * invT + src[src1] * t);
+    dst[dstOffset + 1] = Math.round(src[src0 + 1] * invT + src[src1 + 1] * t);
+    dst[dstOffset + 2] = Math.round(src[src0 + 2] * invT + src[src1 + 2] * t);
+  }
+  return dst;
+}
+function blendRows(rowA, rowB, t, width) {
+  const result = new Uint8Array(width * 3);
+  const invT = 1 - t;
+  for (let i = 0; i < width * 3; i++) {
+    result[i] = Math.round(rowA[i] * invT + rowB[i] * t);
+  }
+  return result;
+}
+function processScanline(state, srcScanline, srcY) {
+  const { srcWidth, srcHeight, dstWidth, dstHeight } = state;
+  const yScale = srcHeight / dstHeight;
+  const output = [];
+  const resizedRow = resizeRowHorizontal(srcScanline, srcWidth, dstWidth);
+  state.bufferA = state.bufferB;
+  state.bufferAY = state.bufferBY;
+  state.bufferB = resizedRow;
+  state.bufferBY = srcY;
+  while (state.currentOutputY < dstHeight) {
+    const srcYFloat = state.currentOutputY * yScale;
+    const srcYFloor = Math.floor(srcYFloat);
+    const srcYCeil = Math.min(srcYFloor + 1, srcHeight - 1);
+    if (srcYCeil > srcY) {
+      break;
+    }
+    if (state.bufferA === null) {
+      output.push({
+        data: state.bufferB,
+        width: dstWidth,
+        y: state.currentOutputY
+      });
+      state.currentOutputY++;
+      continue;
+    }
+    const t = srcYFloat - srcYFloor;
+    let rowA = state.bufferA;
+    let rowB = state.bufferB;
+    if (srcYFloor === state.bufferBY) {
+      rowA = state.bufferB;
+      rowB = state.bufferB;
+    } else if (srcYCeil === state.bufferAY) {
+      rowA = state.bufferA;
+      rowB = state.bufferA;
+    }
+    const blended = blendRows(rowA, rowB, t, dstWidth);
+    output.push({
+      data: blended,
+      width: dstWidth,
+      y: state.currentOutputY
+    });
+    state.currentOutputY++;
+  }
+  return output;
+}
+function flushResize(state) {
+  const output = [];
+  while (state.currentOutputY < state.dstHeight) {
+    if (state.bufferB === null) break;
+    output.push({
+      data: state.bufferB,
+      width: state.dstWidth,
+      y: state.currentOutputY
+    });
+    state.currentOutputY++;
+  }
+  return output;
+}
+function calculateTargetDimensions(srcWidth, srcHeight, maxWidth, maxHeight) {
+  const scaleX = maxWidth / srcWidth;
+  const scaleY = maxHeight / srcHeight;
+  const scale = Math.min(scaleX, scaleY, 1);
+  return {
+    width: Math.round(srcWidth * scale),
+    height: Math.round(srcHeight * scale),
+    scale
+  };
 }
 
 // src/wasm/loader.ts
 var wasmModule = null;
 var wasmPromise = null;
 var precompiledWasmModule = null;
-function isWasmAvailable() {
-  return wasmModule !== null;
-}
 async function initWithWasmModule(compiledModule) {
   if (wasmModule) {
     return;
@@ -310,6 +658,13 @@ async function doLoadWasm() {
   }
   try {
     const createSipModule = (await import('./sip.js')).default;
+    const isNode2 = typeof process !== "undefined" && process.versions != null && process.versions.node != null;
+    if (isNode2) {
+      const { readFile } = await import('fs/promises');
+      const wasmBinary = await readFile(new URL("./sip.wasm", import.meta.url));
+      const module2 = await createSipModule({ wasmBinary });
+      return module2;
+    }
     if (precompiledWasmModule) {
       const module2 = await new Promise((resolve, reject) => {
         let resolvedModule = null;
@@ -360,175 +715,151 @@ function copyFromWasm(module, ptr, size) {
 var WasmJpegDecoder = class {
   module;
   decoder = 0;
-  dataPtr = 0;
   width = 0;
   height = 0;
   outputWidth = 0;
   outputHeight = 0;
-  scaleDenom = 1;
   rowBufferPtr = 0;
   started = false;
   finished = false;
   constructor() {
     this.module = getWasmModule();
-  }
-  /**
-   * Initialize decoder with JPEG data
-   */
-  init(data) {
-    const bytes = data instanceof ArrayBuffer ? new Uint8Array(data) : data;
     this.decoder = this.module._sip_decoder_create();
     if (!this.decoder) {
       throw new Error("Failed to create JPEG decoder");
     }
-    this.dataPtr = copyToWasm(this.module, bytes);
-    if (this.module._sip_decoder_set_source(this.decoder, this.dataPtr, bytes.length) !== 0) {
-      this.dispose();
-      throw new Error("Failed to set decoder source");
+  }
+  pushInput(data, isFinal = false) {
+    if (data.byteLength === 0 && !isFinal) {
+      return;
     }
-    if (this.module._sip_decoder_read_header(this.decoder) !== 0) {
-      this.dispose();
+    let ptr = 0;
+    try {
+      ptr = data.byteLength > 0 ? copyToWasm(this.module, data) : 0;
+      if (this.module._sip_decoder_push_input(this.decoder, ptr, data.byteLength, isFinal ? 1 : 0) !== 0) {
+        throw new Error("Failed to feed JPEG bytes into decoder");
+      }
+    } finally {
+      if (ptr) {
+        this.module._free(ptr);
+      }
+    }
+  }
+  /**
+   * Compatibility helper for full-buffer callers.
+   */
+  init(data) {
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    this.pushInput(bytes, true);
+    const header = this.readHeaderStep();
+    if (header !== "ready") {
+      throw new Error("Incomplete JPEG header");
+    }
+    return { width: this.width, height: this.height };
+  }
+  readHeaderStep() {
+    const result = this.module._sip_decoder_read_header(this.decoder);
+    if (result === 1) {
+      return "needMore";
+    }
+    if (result !== 0) {
       throw new Error("Failed to read JPEG header");
     }
     this.width = this.module._sip_decoder_get_width(this.decoder);
     this.height = this.module._sip_decoder_get_height(this.decoder);
     this.outputWidth = this.width;
     this.outputHeight = this.height;
-    return { width: this.width, height: this.height };
+    return "ready";
   }
-  /**
-   * Get original image dimensions
-   */
   getDimensions() {
     return { width: this.width, height: this.height };
   }
-  /**
-   * Set DCT scale factor for decoding
-   *
-   * Must be called after init() and before start()
-   *
-   * @param scaleDenom - Scale denominator: 1, 2, 4, or 8
-   *   1 = full size (default)
-   *   2 = 1/2 size
-   *   4 = 1/4 size
-   *   8 = 1/8 size
-   */
   setScale(scaleDenom) {
-    if (!this.decoder) {
-      throw new Error("Decoder not initialized");
-    }
-    if (this.started) {
-      throw new Error("Cannot change scale after decoding started");
-    }
     if (this.module._sip_decoder_set_scale(this.decoder, scaleDenom) !== 0) {
       throw new Error(`Invalid scale denominator: ${scaleDenom}`);
     }
-    this.scaleDenom = scaleDenom;
     this.outputWidth = this.module._sip_decoder_get_output_width(this.decoder);
     this.outputHeight = this.module._sip_decoder_get_output_height(this.decoder);
     return { width: this.outputWidth, height: this.outputHeight };
   }
-  /**
-   * Get output dimensions (after any scaling)
-   */
   getOutputDimensions() {
     return { width: this.outputWidth, height: this.outputHeight };
   }
-  /**
-   * Start decoding
-   */
   start() {
-    if (!this.decoder) {
-      throw new Error("Decoder not initialized");
+    const step = this.startStep();
+    if (step !== "ready") {
+      throw new Error("JPEG decoder needs more input before starting");
     }
+  }
+  startStep() {
     if (this.started) {
-      throw new Error("Decoding already started");
+      return "ready";
     }
-    if (this.module._sip_decoder_start(this.decoder) !== 0) {
-      throw new Error("Failed to start decompression");
+    const result = this.module._sip_decoder_start(this.decoder);
+    if (result === 1) {
+      return "needMore";
+    }
+    if (result !== 0) {
+      throw new Error("Failed to start JPEG decompression");
     }
     this.rowBufferPtr = this.module._sip_decoder_get_row_buffer(this.decoder);
     if (!this.rowBufferPtr) {
-      throw new Error("Failed to get row buffer");
+      throw new Error("Failed to get JPEG decoder row buffer");
     }
     this.started = true;
+    return "ready";
   }
-  /**
-   * Read next scanline
-   *
-   * @returns Scanline object or null if no more scanlines
-   */
   readScanline() {
+    const result = this.readScanlineStep();
+    if (result === "needMore") {
+      throw new Error("JPEG decoder needs more input");
+    }
+    return result;
+  }
+  readScanlineStep() {
     if (!this.started || this.finished) {
       return null;
     }
     const result = this.module._sip_decoder_read_scanline(this.decoder);
+    if (result === 2) {
+      return "needMore";
+    }
     if (result === 0) {
       this.finished = true;
       return null;
     }
-    if (result < 0) {
-      throw new Error("Failed to read scanline");
+    if (result !== 1) {
+      throw new Error("Failed to read JPEG scanline");
     }
+    const rowSize = this.outputWidth * 3;
+    const data = new Uint8Array(this.module.HEAPU8.buffer, this.rowBufferPtr, rowSize).slice();
     const y = this.module._sip_decoder_get_scanline(this.decoder) - 1;
-    const rowSize = this.outputWidth * 3;
-    const data = new Uint8Array(
-      this.module.HEAPU8.buffer,
-      this.rowBufferPtr,
-      rowSize
-    ).slice();
-    return {
-      data,
-      width: this.outputWidth,
-      y
-    };
+    return { data, width: this.outputWidth, y };
   }
-  /**
-   * Read all remaining scanlines
-   *
-   * @yields Scanline objects
-   */
-  *readAllScanlines() {
-    let scanline;
-    while ((scanline = this.readScanline()) !== null) {
-      yield scanline;
+  finishStep() {
+    const result = this.module._sip_decoder_finish(this.decoder);
+    if (result === 1) {
+      return "needMore";
     }
+    if (result !== 0) {
+      throw new Error("Failed to finish JPEG decompression");
+    }
+    return "ready";
   }
-  /**
-   * Decode entire image to RGB buffer
-   *
-   * @returns Full RGB pixel buffer
-   */
-  decodeAll() {
-    if (!this.started) {
-      this.start();
-    }
-    const pixels = new Uint8Array(this.outputWidth * this.outputHeight * 3);
-    const rowSize = this.outputWidth * 3;
-    for (const scanline of this.readAllScanlines()) {
-      pixels.set(scanline.data, scanline.y * rowSize);
-    }
-    return {
-      pixels,
-      width: this.outputWidth,
-      height: this.outputHeight
-    };
+  getBufferedInputSize() {
+    return this.module._sip_decoder_get_buffered_input_size(this.decoder);
   }
-  /**
-   * Clean up resources
-   */
+  getRowBufferSize() {
+    return this.outputWidth * 3;
+  }
   dispose() {
     if (this.decoder) {
       this.module._sip_decoder_destroy(this.decoder);
       this.decoder = 0;
     }
-    if (this.dataPtr) {
-      this.module._free(this.dataPtr);
-      this.dataPtr = 0;
-    }
+    this.rowBufferPtr = 0;
     this.started = false;
     this.finished = false;
-    this.rowBufferPtr = 0;
   }
 };
 function calculateOptimalScale(srcWidth, srcHeight, targetWidth, targetHeight) {
@@ -549,143 +880,125 @@ var WasmJpegEncoder = class {
   encoder = 0;
   width = 0;
   height = 0;
-  quality = 85;
   rowBufferPtr = 0;
   started = false;
   finished = false;
   currentLine = 0;
   constructor() {
     this.module = getWasmModule();
-  }
-  /**
-   * Initialize encoder with output dimensions and quality
-   *
-   * @param width - Output image width
-   * @param height - Output image height
-   * @param quality - JPEG quality (1-100, default 85)
-   */
-  init(width, height, quality = 85) {
-    this.width = width;
-    this.height = height;
-    this.quality = Math.max(1, Math.min(100, quality));
     this.encoder = this.module._sip_encoder_create();
     if (!this.encoder) {
       throw new Error("Failed to create JPEG encoder");
     }
-    if (this.module._sip_encoder_init(this.encoder, width, height, this.quality) !== 0) {
-      this.dispose();
-      throw new Error("Failed to initialize encoder");
+  }
+  init(width, height, quality = 85) {
+    this.width = width;
+    this.height = height;
+    if (this.module._sip_encoder_init(this.encoder, width, height, quality) !== 0) {
+      throw new Error("Failed to initialize JPEG encoder");
     }
   }
-  /**
-   * Start encoding
-   */
   start() {
-    if (!this.encoder) {
-      throw new Error("Encoder not initialized");
-    }
     if (this.started) {
-      throw new Error("Encoding already started");
+      return;
     }
     if (this.module._sip_encoder_start(this.encoder) !== 0) {
-      throw new Error("Failed to start compression");
+      throw new Error("Failed to start JPEG compression");
     }
     this.rowBufferPtr = this.module._sip_encoder_get_row_buffer(this.encoder);
     if (!this.rowBufferPtr) {
-      throw new Error("Failed to get row buffer");
+      throw new Error("Failed to get JPEG encoder row buffer");
     }
     this.started = true;
     this.currentLine = 0;
   }
-  /**
-   * Write a scanline to the encoder
-   *
-   * @param scanline - Scanline with RGB data
-   */
   writeScanline(scanline) {
     this.writeScanlineData(scanline.data);
   }
-  /**
-   * Write raw RGB data as a scanline
-   *
-   * @param data - RGB data (width * 3 bytes)
-   */
   writeScanlineData(data) {
     if (!this.started || this.finished) {
-      throw new Error("Encoder not ready for writing");
-    }
-    if (this.currentLine >= this.height) {
-      throw new Error("All scanlines already written");
+      throw new Error("Encoder is not ready for scanlines");
     }
     const expectedSize = this.width * 3;
-    if (data.length !== expectedSize) {
-      throw new Error(`Invalid scanline size: expected ${expectedSize}, got ${data.length}`);
+    if (data.byteLength !== expectedSize) {
+      throw new Error(`Invalid scanline size: expected ${expectedSize}, got ${data.byteLength}`);
     }
     this.module.HEAPU8.set(data, this.rowBufferPtr);
     if (this.module._sip_encoder_write_scanline(this.encoder) !== 1) {
-      throw new Error("Failed to write scanline");
+      throw new Error("Failed to write JPEG scanline");
     }
     this.currentLine++;
   }
-  /**
-   * Get current scanline number
-   */
-  getCurrentLine() {
-    return this.currentLine;
+  drainChunks() {
+    const chunks = [];
+    while (true) {
+      const ptr = this.module._sip_encoder_peek_chunk_data(this.encoder);
+      const size = this.module._sip_encoder_peek_chunk_size(this.encoder);
+      if (!ptr || !size) {
+        break;
+      }
+      chunks.push(copyFromWasm(this.module, ptr, size));
+      this.module._sip_encoder_pop_chunk(this.encoder);
+    }
+    return chunks;
   }
-  /**
-   * Finish encoding and get output
-   *
-   * @returns JPEG data as ArrayBuffer
-   */
   finish() {
     if (!this.started) {
       throw new Error("Encoding not started");
+    }
+    if (this.finished) {
+      return [];
     }
     if (this.currentLine !== this.height) {
       throw new Error(`Incomplete image: wrote ${this.currentLine}/${this.height} scanlines`);
     }
     if (this.module._sip_encoder_finish(this.encoder) !== 0) {
-      throw new Error("Failed to finish encoding");
+      throw new Error("Failed to finish JPEG compression");
     }
     this.finished = true;
-    const outputPtr = this.module._sip_encoder_get_output(this.encoder);
-    const outputSize = this.module._sip_encoder_get_output_size(this.encoder);
-    if (!outputPtr || !outputSize) {
-      throw new Error("No output data");
-    }
-    const output = copyFromWasm(this.module, outputPtr, outputSize);
-    return output.buffer;
+    return this.drainChunks();
   }
-  /**
-   * Encode a full RGB buffer to JPEG
-   *
-   * @param pixels - RGB pixel data (width * height * 3 bytes)
-   * @returns JPEG data as ArrayBuffer
-   */
   encodeAll(pixels) {
-    if (pixels.length !== this.width * this.height * 3) {
-      throw new Error(`Invalid pixel data size: expected ${this.width * this.height * 3}, got ${pixels.length}`);
-    }
     this.start();
     const rowSize = this.width * 3;
+    const chunks = [];
+    let total = 0;
     for (let y = 0; y < this.height; y++) {
-      const rowData = pixels.subarray(y * rowSize, (y + 1) * rowSize);
-      this.writeScanlineData(rowData);
+      this.writeScanlineData(pixels.subarray(y * rowSize, (y + 1) * rowSize));
+      for (const chunk of this.drainChunks()) {
+        chunks.push(chunk);
+        total += chunk.byteLength;
+      }
     }
-    return this.finish();
+    for (const chunk of this.finish()) {
+      chunks.push(chunk);
+      total += chunk.byteLength;
+    }
+    const merged = new Uint8Array(total);
+    let offset = 0;
+    for (const chunk of chunks) {
+      merged.set(chunk, offset);
+      offset += chunk.byteLength;
+    }
+    return merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength);
   }
-  /**
-   * Clean up resources
-   */
+  getBufferedOutputSize() {
+    return this.module._sip_encoder_get_buffered_output_size(this.encoder);
+  }
+  getRowBufferSize() {
+    return this.width * 3;
+  }
+  getCurrentLine() {
+    return this.currentLine;
+  }
   dispose() {
     if (this.encoder) {
       this.module._sip_encoder_destroy(this.encoder);
       this.encoder = 0;
     }
+    this.rowBufferPtr = 0;
     this.started = false;
     this.finished = false;
-    this.rowBufferPtr = 0;
     this.currentLine = 0;
   }
 };
@@ -844,474 +1157,561 @@ var WasmPngDecoder = class {
   }
 };
 
-// src/encoder.ts
-var NativeEncoder = class {
-  supportsScanline = true;
-  width = 0;
-  height = 0;
-  quality = 85;
-  wasmEncoder = null;
-  async init(width, height, quality) {
-    this.width = width;
-    this.height = height;
-    this.quality = quality;
-    await loadWasm();
-    this.wasmEncoder = new WasmJpegEncoder();
-    this.wasmEncoder.init(width, height, quality);
-  }
-  async encode(pixels) {
-    if (!this.wasmEncoder) {
-      throw new Error("Encoder not initialized. Call init() first.");
-    }
-    return this.wasmEncoder.encodeAll(pixels);
-  }
-  dispose() {
-    if (this.wasmEncoder) {
-      this.wasmEncoder.dispose();
-      this.wasmEncoder = null;
-    }
-  }
-};
-async function createEncoder(width, height, quality) {
-  const encoder = new NativeEncoder();
-  await encoder.init(width, height, quality);
-  return encoder;
+// src/api.ts
+var DEFAULT_QUALITY = 85;
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { resolve, reject, promise };
 }
-
-// src/resize.ts
-function createResizeState(srcWidth, srcHeight, dstWidth, dstHeight) {
+function makeEmptyStats() {
   return {
-    srcWidth,
-    srcHeight,
-    dstWidth,
-    dstHeight,
-    bufferA: null,
-    bufferB: null,
-    bufferAY: -1,
-    bufferBY: -1,
-    currentOutputY: 0
+    peakPipelineBytes: 0,
+    peakCodecBytes: 0,
+    peakBufferedInputBytes: 0,
+    peakBufferedOutputBytes: 0,
+    bytesIn: 0,
+    bytesOut: 0,
+    notes: []
   };
 }
-function resizeRowHorizontal(src, srcWidth, dstWidth) {
-  const dst = new Uint8Array(dstWidth * 3);
-  const xScale = srcWidth / dstWidth;
-  for (let dstX = 0; dstX < dstWidth; dstX++) {
-    const srcXFloat = dstX * xScale;
-    const srcX0 = Math.floor(srcXFloat);
-    const srcX1 = Math.min(srcX0 + 1, srcWidth - 1);
-    const t = srcXFloat - srcX0;
-    const invT = 1 - t;
-    const src0 = srcX0 * 3;
-    const src1 = srcX1 * 3;
-    const dstOffset = dstX * 3;
-    dst[dstOffset] = Math.round(src[src0] * invT + src[src1] * t);
-    dst[dstOffset + 1] = Math.round(src[src0 + 1] * invT + src[src1 + 1] * t);
-    dst[dstOffset + 2] = Math.round(src[src0 + 2] * invT + src[src1 + 2] * t);
-  }
-  return dst;
-}
-function blendRows(rowA, rowB, t, width) {
-  const result = new Uint8Array(width * 3);
-  const invT = 1 - t;
-  for (let i = 0; i < width * 3; i++) {
-    result[i] = Math.round(rowA[i] * invT + rowB[i] * t);
-  }
-  return result;
-}
-function processScanline(state, srcScanline, srcY) {
-  const { srcWidth, srcHeight, dstWidth, dstHeight } = state;
-  const yScale = srcHeight / dstHeight;
-  const output = [];
-  const resizedRow = resizeRowHorizontal(srcScanline, srcWidth, dstWidth);
-  state.bufferA = state.bufferB;
-  state.bufferAY = state.bufferBY;
-  state.bufferB = resizedRow;
-  state.bufferBY = srcY;
-  while (state.currentOutputY < dstHeight) {
-    const srcYFloat = state.currentOutputY * yScale;
-    const srcYFloor = Math.floor(srcYFloat);
-    const srcYCeil = Math.min(srcYFloor + 1, srcHeight - 1);
-    if (srcYCeil > srcY) {
-      break;
+var StatsTracker = class {
+  stats = makeEmptyStats();
+  constructor(note) {
+    if (note) {
+      this.note(note);
     }
-    if (state.bufferA === null) {
-      output.push({
-        data: state.bufferB,
-        width: dstWidth,
-        y: state.currentOutputY
-      });
-      state.currentOutputY++;
-      continue;
-    }
-    const t = srcYFloat - srcYFloor;
-    let rowA = state.bufferA;
-    let rowB = state.bufferB;
-    if (srcYFloor === state.bufferBY) {
-      rowA = state.bufferB;
-      rowB = state.bufferB;
-    } else if (srcYCeil === state.bufferAY) {
-      rowA = state.bufferA;
-      rowB = state.bufferA;
-    }
-    const blended = blendRows(rowA, rowB, t, dstWidth);
-    output.push({
-      data: blended,
-      width: dstWidth,
-      y: state.currentOutputY
-    });
-    state.currentOutputY++;
   }
-  return output;
-}
-function flushResize(state) {
-  const output = [];
-  while (state.currentOutputY < state.dstHeight) {
-    if (state.bufferB === null) break;
-    output.push({
-      data: state.bufferB,
-      width: state.dstWidth,
-      y: state.currentOutputY
-    });
-    state.currentOutputY++;
+  note(message) {
+    if (!this.stats.notes.includes(message)) {
+      this.stats.notes.push(message);
+    }
   }
-  return output;
+  addBytesIn(bytes) {
+    this.stats.bytesIn += bytes;
+  }
+  addBytesOut(bytes) {
+    this.stats.bytesOut += bytes;
+  }
+  update(bufferedInput, bufferedOutput, codecBytes, pipelineBytes) {
+    this.stats.peakBufferedInputBytes = Math.max(this.stats.peakBufferedInputBytes, bufferedInput);
+    this.stats.peakBufferedOutputBytes = Math.max(this.stats.peakBufferedOutputBytes, bufferedOutput);
+    this.stats.peakCodecBytes = Math.max(this.stats.peakCodecBytes, codecBytes);
+    this.stats.peakPipelineBytes = Math.max(this.stats.peakPipelineBytes, pipelineBytes);
+  }
+  snapshot() {
+    return { ...this.stats, notes: [...this.stats.notes] };
+  }
+};
+function normalizeBox(options, width, height) {
+  return calculateTargetDimensions(
+    width,
+    height,
+    options.width ?? width,
+    options.height ?? height
+  );
 }
-function calculateTargetDimensions(srcWidth, srcHeight, maxWidth, maxHeight) {
-  const scaleX = maxWidth / srcWidth;
-  const scaleY = maxHeight / srcHeight;
-  const scale = Math.min(scaleX, scaleY, 1);
+function createPixelStream(iteratorFactory, info, stats = Promise.resolve(makeEmptyStats())) {
   return {
-    width: Math.round(srcWidth * scale),
-    height: Math.round(srcHeight * scale),
-    scale
+    info,
+    stats,
+    [Symbol.asyncIterator]() {
+      return iteratorFactory()[Symbol.asyncIterator]();
+    }
   };
 }
-function calculateDctScaleFactor(srcWidth, srcHeight, targetWidth, targetHeight) {
-  const scales = [8, 4, 2, 1];
-  for (const scale of scales) {
-    const scaledWidth = Math.ceil(srcWidth / scale);
-    const scaledHeight = Math.ceil(srcHeight / scale);
-    if (scaledWidth >= targetWidth && scaledHeight >= targetHeight) {
-      return scale;
+function createEncodedImage(iteratorFactory, info, stats) {
+  return {
+    info,
+    stats,
+    [Symbol.asyncIterator]() {
+      return iteratorFactory()[Symbol.asyncIterator]();
     }
-  }
-  return 1;
+  };
 }
-
-// src/streaming.ts
-var DEFAULT_OPTIONS = {
-  maxWidth: 4096,
-  maxHeight: 4096,
-  maxBytes: 1.5 * 1024 * 1024,
-  quality: 85
-};
-function calculateRetryDimensions(width, height, currentBytes, maxBytes) {
-  const scaleFactor = Math.sqrt(maxBytes / currentBytes) * 0.85;
-  let nextWidth = Math.max(1, Math.floor(width * scaleFactor));
-  let nextHeight = Math.max(1, Math.floor(height * scaleFactor));
-  if (nextWidth >= width && width > 1) {
-    nextWidth = width - 1;
+async function* iterateUint8ArrayRows(pixels, width, height) {
+  const rowSize = width * 3;
+  for (let y = 0; y < height; y++) {
+    yield {
+      data: pixels.subarray(y * rowSize, (y + 1) * rowSize),
+      width,
+      y
+    };
   }
-  if (nextHeight >= height && height > 1) {
-    nextHeight = height - 1;
-  }
-  if (nextWidth === width && nextHeight === height) {
-    return null;
-  }
-  return { width: nextWidth, height: nextHeight };
 }
-async function processJpegStreaming(input, options = {}) {
-  const opts = { ...DEFAULT_OPTIONS, ...options };
+async function* decodeSourceInternal(input) {
+  const prepared = await prepareInputSource(input);
+  const info = await inspectSource(prepared);
+  if (info.format === "unknown") {
+    throw new Error("Unsupported image format");
+  }
   await loadWasm();
-  const decoder = new WasmJpegDecoder();
+  if (info.format === "jpeg") {
+    const decoder2 = new WasmJpegDecoder();
+    try {
+      let headerReady = false;
+      let started = false;
+      for await (const chunk of prepared.open()) {
+        decoder2.pushInput(chunk, false);
+        if (!headerReady) {
+          const headerStep = decoder2.readHeaderStep();
+          if (headerStep === "ready") {
+            headerReady = true;
+          } else {
+            continue;
+          }
+        }
+        if (!started) {
+          const startStep = decoder2.startStep();
+          if (startStep === "ready") {
+            started = true;
+          } else {
+            continue;
+          }
+        }
+        while (true) {
+          const scanline = decoder2.readScanlineStep();
+          if (scanline === "needMore") {
+            break;
+          }
+          if (scanline === null) {
+            return;
+          }
+          yield scanline;
+        }
+      }
+      decoder2.pushInput(new Uint8Array(0), true);
+      if (!headerReady) {
+        if (decoder2.readHeaderStep() !== "ready") {
+          throw new Error("Incomplete JPEG image");
+        }
+        headerReady = true;
+      }
+      if (!started) {
+        if (decoder2.startStep() !== "ready") {
+          throw new Error("Incomplete JPEG image");
+        }
+        started = true;
+      }
+      while (true) {
+        const scanline = decoder2.readScanlineStep();
+        if (scanline === "needMore") {
+          throw new Error("Unexpected end of JPEG input");
+        }
+        if (scanline === null) {
+          decoder2.finishStep();
+          return;
+        }
+        yield scanline;
+      }
+    } finally {
+      decoder2.dispose();
+    }
+  }
+  const bytes = await collectSourceBytes(prepared);
+  const buffer = asArrayBuffer(bytes);
+  if (info.format === "png") {
+    const decoder2 = new WasmPngDecoder();
+    try {
+      decoder2.init(buffer);
+      decoder2.start();
+      for (const scanline of decoder2.readAllScanlines()) {
+        yield scanline;
+      }
+    } finally {
+      decoder2.dispose();
+    }
+    return;
+  }
+  const decoder = await createDecoder(info.format, buffer);
   try {
-    const { width: srcWidth, height: srcHeight } = decoder.init(input);
-    const target = calculateTargetDimensions(
-      srcWidth,
-      srcHeight,
-      opts.maxWidth,
-      opts.maxHeight
-    );
-    const dctScale = calculateOptimalScale(
-      srcWidth,
-      srcHeight,
+    const decoded = await decoder.decode();
+    yield* iterateUint8ArrayRows(decoded.pixels, decoded.width, decoded.height);
+  } finally {
+    decoder.dispose();
+  }
+}
+function decode(input) {
+  const infoDeferred = createDeferred();
+  const iteratorFactory = () => (async function* decodeIterator() {
+    const prepared = await prepareInputSource(input);
+    const info = await inspectSource(prepared);
+    if (info.format === "unknown") {
+      throw new Error("Unsupported image format");
+    }
+    infoDeferred.resolve({
+      width: info.width,
+      height: info.height,
+      originalFormat: info.format
+    });
+    yield* decodeSourceInternal(prepared);
+  })();
+  return createPixelStream(iteratorFactory, infoDeferred.promise);
+}
+function resize(stream, options) {
+  const infoPromise = stream.info.then((info) => {
+    const target = normalizeBox(options, info.width, info.height);
+    return {
+      width: target.width,
+      height: target.height,
+      originalFormat: info.originalFormat
+    };
+  });
+  const iteratorFactory = () => (async function* resizeIterator() {
+    const sourceInfo = await stream.info;
+    const target = normalizeBox(options, sourceInfo.width, sourceInfo.height);
+    const state = createResizeState(
+      sourceInfo.width,
+      sourceInfo.height,
       target.width,
       target.height
     );
-    const { width: decodeWidth, height: decodeHeight } = decoder.setScale(dctScale);
-    const resizeState = createResizeState(
-      decodeWidth,
-      decodeHeight,
-      target.width,
-      target.height
-    );
-    const encoder = new WasmJpegEncoder();
-    encoder.init(target.width, target.height, opts.quality);
-    encoder.start();
-    decoder.start();
-    let decodedLine = 0;
-    for (const scanline of decoder.readAllScanlines()) {
-      const outputScanlines = processScanline(resizeState, scanline.data, decodedLine);
-      decodedLine++;
-      for (const outScanline of outputScanlines) {
-        encoder.writeScanline(outScanline);
+    for await (const scanline of stream) {
+      const output = processScanline(state, scanline.data, scanline.y);
+      for (const next of output) {
+        yield next;
       }
     }
-    const remaining = flushResize(resizeState);
-    for (const outScanline of remaining) {
-      encoder.writeScanline(outScanline);
+    for (const next of flushResize(state)) {
+      yield next;
     }
-    const jpegData = encoder.finish();
-    if (jpegData.byteLength > opts.maxBytes && opts.quality > 45) {
+  })();
+  return createPixelStream(iteratorFactory, infoPromise, stream.stats ?? Promise.resolve(makeEmptyStats()));
+}
+function encodeJpeg(stream, options = {}) {
+  const quality = options.quality ?? DEFAULT_QUALITY;
+  const infoPromise = stream.info.then((info) => ({
+    width: info.width,
+    height: info.height,
+    mimeType: "image/jpeg",
+    originalFormat: info.originalFormat
+  }));
+  const statsPromise = stream.stats ?? Promise.resolve(makeEmptyStats());
+  const iteratorFactory = () => (async function* encodeIterator() {
+    await loadWasm();
+    const info = await stream.info;
+    const encoder = new WasmJpegEncoder();
+    try {
+      encoder.init(info.width, info.height, quality);
+      encoder.start();
+      for await (const scanline of stream) {
+        encoder.writeScanline(scanline);
+        for (const chunk of encoder.drainChunks()) {
+          yield chunk;
+        }
+      }
+      for (const chunk of encoder.finish()) {
+        yield chunk;
+      }
+    } finally {
       encoder.dispose();
-      decoder.dispose();
-      return processJpegStreaming(input, {
-        ...opts,
-        quality: opts.quality - 10
-      });
     }
-    if (jpegData.byteLength > opts.maxBytes) {
-      encoder.dispose();
-      decoder.dispose();
-      const retryDimensions = calculateRetryDimensions(
-        target.width,
-        target.height,
-        jpegData.byteLength,
-        opts.maxBytes
-      );
-      if (!retryDimensions) {
-        return {
-          data: jpegData,
+  })();
+  return createEncodedImage(iteratorFactory, infoPromise, statsPromise);
+}
+async function* runJpegTransform(source, info, options, infoDeferred, stats) {
+  await loadWasm();
+  const target = normalizeBox(options, info.width, info.height);
+  const decoder = new WasmJpegDecoder();
+  const encoder = new WasmJpegEncoder();
+  let resizeState = createResizeState(1, 1, target.width, target.height);
+  let headerReady = false;
+  let started = false;
+  let decodeWidth = info.width;
+  let decodeHeight = info.height;
+  const refresh = () => {
+    const resizeBytes = (resizeState.bufferA?.byteLength ?? 0) + (resizeState.bufferB?.byteLength ?? 0);
+    const codecBytes = decoder.getBufferedInputSize() + decoder.getRowBufferSize() + encoder.getBufferedOutputSize() + encoder.getRowBufferSize();
+    const pipelineBytes = codecBytes + resizeBytes;
+    stats.update(decoder.getBufferedInputSize(), encoder.getBufferedOutputSize(), codecBytes, pipelineBytes);
+  };
+  try {
+    for await (const chunk of source.open()) {
+      stats.addBytesIn(chunk.byteLength);
+      decoder.pushInput(chunk, false);
+      refresh();
+      if (!headerReady) {
+        const headerStep = decoder.readHeaderStep();
+        if (headerStep === "needMore") {
+          continue;
+        }
+        headerReady = true;
+        const scale = calculateOptimalScale(info.width, info.height, target.width, target.height);
+        const output = decoder.setScale(scale);
+        decodeWidth = output.width;
+        decodeHeight = output.height;
+        resizeState = createResizeState(output.width, output.height, target.width, target.height);
+        encoder.init(target.width, target.height, options.quality ?? DEFAULT_QUALITY);
+        encoder.start();
+        infoDeferred.resolve({
           width: target.width,
           height: target.height,
           mimeType: "image/jpeg",
           originalFormat: "jpeg"
-        };
+        });
+        stats.note(`jpeg-dct-scale=1/${scale}`);
+        refresh();
       }
-      return processJpegStreaming(input, {
-        ...opts,
-        maxWidth: retryDimensions.width,
-        maxHeight: retryDimensions.height
-      });
+      if (!started) {
+        const startStep = decoder.startStep();
+        if (startStep === "needMore") {
+          continue;
+        }
+        started = true;
+        refresh();
+      }
+      while (true) {
+        const scanline = decoder.readScanlineStep();
+        if (scanline === "needMore") {
+          break;
+        }
+        if (scanline === null) {
+          break;
+        }
+        const outputScanlines = processScanline(resizeState, scanline.data, scanline.y);
+        refresh();
+        for (const outScanline of outputScanlines) {
+          encoder.writeScanline(outScanline);
+          refresh();
+          for (const jpegChunk of encoder.drainChunks()) {
+            stats.addBytesOut(jpegChunk.byteLength);
+            refresh();
+            yield jpegChunk;
+          }
+        }
+      }
     }
-    encoder.dispose();
-    return {
-      data: jpegData,
-      width: target.width,
-      height: target.height,
-      mimeType: "image/jpeg",
-      originalFormat: "jpeg"
-    };
-  } finally {
-    decoder.dispose();
-  }
-}
-async function processPngStreaming(input, options = {}) {
-  const opts = { ...DEFAULT_OPTIONS, ...options };
-  await loadWasm();
-  const decoder = new WasmPngDecoder();
-  try {
-    const { width: srcWidth, height: srcHeight } = decoder.init(input);
-    const target = calculateTargetDimensions(
-      srcWidth,
-      srcHeight,
-      opts.maxWidth,
-      opts.maxHeight
-    );
-    const resizeState = createResizeState(
-      srcWidth,
-      srcHeight,
-      target.width,
-      target.height
-    );
-    const encoder = new WasmJpegEncoder();
-    encoder.init(target.width, target.height, opts.quality);
-    encoder.start();
-    decoder.start();
-    let decodedLine = 0;
-    for (const scanline of decoder.readAllScanlines()) {
-      const outputScanlines = processScanline(resizeState, scanline.data, decodedLine);
-      decodedLine++;
+    stats.note(`jpeg-decoded=${decodeWidth}x${decodeHeight}`);
+    decoder.pushInput(new Uint8Array(0), true);
+    refresh();
+    if (!headerReady) {
+      if (decoder.readHeaderStep() !== "ready") {
+        throw new Error("Incomplete JPEG header");
+      }
+      const scale = calculateOptimalScale(info.width, info.height, target.width, target.height);
+      const output = decoder.setScale(scale);
+      resizeState = createResizeState(output.width, output.height, target.width, target.height);
+      encoder.init(target.width, target.height, options.quality ?? DEFAULT_QUALITY);
+      encoder.start();
+      infoDeferred.resolve({
+        width: target.width,
+        height: target.height,
+        mimeType: "image/jpeg",
+        originalFormat: "jpeg"
+      });
+      stats.note(`jpeg-dct-scale=1/${scale}`);
+      headerReady = true;
+    }
+    if (!started) {
+      if (decoder.startStep() !== "ready") {
+        throw new Error("Unexpected end of JPEG input before decode start");
+      }
+      started = true;
+    }
+    while (true) {
+      const scanline = decoder.readScanlineStep();
+      if (scanline === "needMore") {
+        throw new Error("Unexpected end of JPEG input");
+      }
+      if (scanline === null) {
+        break;
+      }
+      const outputScanlines = processScanline(resizeState, scanline.data, scanline.y);
+      refresh();
       for (const outScanline of outputScanlines) {
         encoder.writeScanline(outScanline);
+        refresh();
+        for (const jpegChunk of encoder.drainChunks()) {
+          stats.addBytesOut(jpegChunk.byteLength);
+          refresh();
+          yield jpegChunk;
+        }
       }
     }
-    const remaining = flushResize(resizeState);
-    for (const outScanline of remaining) {
+    if (decoder.finishStep() !== "ready") {
+      throw new Error("Unexpected end of JPEG input while finishing");
+    }
+    for (const outScanline of flushResize(resizeState)) {
       encoder.writeScanline(outScanline);
-    }
-    const jpegData = encoder.finish();
-    if (jpegData.byteLength > opts.maxBytes && opts.quality > 45) {
-      encoder.dispose();
-      decoder.dispose();
-      return processPngStreaming(input, {
-        ...opts,
-        quality: opts.quality - 10
-      });
-    }
-    if (jpegData.byteLength > opts.maxBytes) {
-      encoder.dispose();
-      decoder.dispose();
-      const retryDimensions = calculateRetryDimensions(
-        target.width,
-        target.height,
-        jpegData.byteLength,
-        opts.maxBytes
-      );
-      if (!retryDimensions) {
-        return {
-          data: jpegData,
-          width: target.width,
-          height: target.height,
-          mimeType: "image/jpeg",
-          originalFormat: "png"
-        };
+      refresh();
+      for (const jpegChunk of encoder.drainChunks()) {
+        stats.addBytesOut(jpegChunk.byteLength);
+        refresh();
+        yield jpegChunk;
       }
-      return processPngStreaming(input, {
-        ...opts,
-        maxWidth: retryDimensions.width,
-        maxHeight: retryDimensions.height
-      });
     }
-    encoder.dispose();
-    return {
-      data: jpegData,
-      width: target.width,
-      height: target.height,
-      mimeType: "image/jpeg",
-      originalFormat: "png"
-    };
+    for (const jpegChunk of encoder.finish()) {
+      stats.addBytesOut(jpegChunk.byteLength);
+      refresh();
+      yield jpegChunk;
+    }
   } finally {
     decoder.dispose();
+    encoder.dispose();
   }
 }
-function isStreamingAvailable() {
-  return isWasmAvailable();
-}
-async function initStreaming() {
-  try {
-    await loadWasm();
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-// src/pipeline.ts
-var DEFAULT_OPTIONS2 = {
-  maxWidth: 4096,
-  maxHeight: 4096,
-  maxBytes: 1.5 * 1024 * 1024,
-  // 1.5MB
-  quality: 85
-};
-async function process2(input, options = {}) {
-  const opts = { ...DEFAULT_OPTIONS2, ...options };
-  const probeResult = probe(input);
-  if (probeResult.format === "unknown") {
-    throw new Error("Unknown image format");
-  }
-  const { format, width: srcWidth, height: srcHeight } = probeResult;
-  if (format === "jpeg") {
-    return await processJpegStreaming(input, opts);
-  }
-  if (format === "png") {
-    return await processPngStreaming(input, opts);
-  }
+async function* runBufferedTransform(source, info, options, infoDeferred, stats) {
+  const bytes = await collectSourceBytes(source);
+  stats.addBytesIn(bytes.byteLength);
+  stats.update(bytes.byteLength, 0, bytes.byteLength, bytes.byteLength);
+  stats.note(`${info.format}-input-buffered`);
   await loadWasm();
-  const target = calculateTargetDimensions(
-    srcWidth,
-    srcHeight,
-    opts.maxWidth,
-    opts.maxHeight
-  );
-  const decoder = await createDecoder(format, input);
-  const { pixels: srcPixels, width: decodedWidth, height: decodedHeight } = await decoder.decode();
-  decoder.dispose();
-  const resizedPixels = resizePixelBuffer(
-    srcPixels,
-    decodedWidth,
-    decodedHeight,
-    target.width,
-    target.height
-  );
-  let quality = opts.quality;
-  let jpegData = await encodeToJpeg(resizedPixels, target.width, target.height, quality);
-  while (jpegData.byteLength > opts.maxBytes && quality > 45) {
-    quality -= 10;
-    jpegData = await encodeToJpeg(resizedPixels, target.width, target.height, quality);
+  const target = normalizeBox(options, info.width, info.height);
+  const encoder = new WasmJpegEncoder();
+  let scanlines;
+  if (info.format === "png") {
+    const decoder = new WasmPngDecoder();
+    decoder.init(asArrayBuffer(bytes));
+    decoder.start();
+    const state = createResizeState(info.width, info.height, target.width, target.height);
+    scanlines = (async function* pngRows() {
+      try {
+        for (const scanline of decoder.readAllScanlines()) {
+          for (const outScanline of processScanline(state, scanline.data, scanline.y)) {
+            yield outScanline;
+          }
+        }
+        for (const outScanline of flushResize(state)) {
+          yield outScanline;
+        }
+      } finally {
+        decoder.dispose();
+      }
+    })();
+  } else {
+    const decoder = await createDecoder(info.format, asArrayBuffer(bytes));
+    const decoded = await decoder.decode();
+    decoder.dispose();
+    const state = createResizeState(decoded.width, decoded.height, target.width, target.height);
+    scanlines = (async function* bufferedRows() {
+      for await (const row of iterateUint8ArrayRows(decoded.pixels, decoded.width, decoded.height)) {
+        for (const outScanline of processScanline(state, row.data, row.y)) {
+          yield outScanline;
+        }
+      }
+      for (const outScanline of flushResize(state)) {
+        yield outScanline;
+      }
+    })();
   }
-  if (jpegData.byteLength > opts.maxBytes) {
-    const scaleFactor = Math.sqrt(opts.maxBytes / jpegData.byteLength) * 0.9;
-    const newWidth = Math.round(target.width * scaleFactor);
-    const newHeight = Math.round(target.height * scaleFactor);
-    const smallerPixels = resizePixelBuffer(
-      resizedPixels,
-      target.width,
-      target.height,
-      newWidth,
-      newHeight
-    );
-    jpegData = await encodeToJpeg(smallerPixels, newWidth, newHeight, quality);
-    return {
-      data: jpegData,
-      width: newWidth,
-      height: newHeight,
-      mimeType: "image/jpeg",
-      originalFormat: format
-    };
-  }
-  return {
-    data: jpegData,
+  infoDeferred.resolve({
     width: target.width,
     height: target.height,
     mimeType: "image/jpeg",
-    originalFormat: format
+    originalFormat: info.format
+  });
+  try {
+    encoder.init(target.width, target.height, options.quality ?? DEFAULT_QUALITY);
+    encoder.start();
+    for await (const scanline of scanlines) {
+      encoder.writeScanline(scanline);
+      const codecBytes = bytes.byteLength + encoder.getBufferedOutputSize() + encoder.getRowBufferSize();
+      stats.update(bytes.byteLength, encoder.getBufferedOutputSize(), codecBytes, codecBytes);
+      for (const chunk of encoder.drainChunks()) {
+        stats.addBytesOut(chunk.byteLength);
+        stats.update(bytes.byteLength, encoder.getBufferedOutputSize(), codecBytes, codecBytes);
+        yield chunk;
+      }
+    }
+    for (const chunk of encoder.finish()) {
+      stats.addBytesOut(chunk.byteLength);
+      const codecBytes = bytes.byteLength + encoder.getBufferedOutputSize() + encoder.getRowBufferSize();
+      stats.update(bytes.byteLength, encoder.getBufferedOutputSize(), codecBytes, codecBytes);
+      yield chunk;
+    }
+  } finally {
+    encoder.dispose();
+  }
+}
+function transform(input, options = {}) {
+  const infoDeferred = createDeferred();
+  const statsDeferred = createDeferred();
+  const iteratorFactory = () => (async function* transformIterator() {
+    const prepared = await prepareInputSource(input);
+    const info = await inspectSource(prepared);
+    if (info.format === "unknown") {
+      throw new Error("Unsupported image format");
+    }
+    const stats = new StatsTracker(
+      prepared.kind === "stream" ? "streaming-input" : "byte-input"
+    );
+    try {
+      if (info.format === "jpeg") {
+        yield* runJpegTransform(prepared, info, options, infoDeferred, stats);
+      } else {
+        yield* runBufferedTransform(prepared, info, options, infoDeferred, stats);
+      }
+      statsDeferred.resolve(stats.snapshot());
+    } catch (error) {
+      infoDeferred.reject(error);
+      statsDeferred.reject(error);
+      throw error;
+    }
+  })();
+  return createEncodedImage(iteratorFactory, infoDeferred.promise, statsDeferred.promise);
+}
+async function ready(options = {}) {
+  if (options.wasm instanceof WebAssembly.Module) {
+    await initWithWasmModule(options.wasm);
+    return;
+  }
+  if (options.wasm instanceof ArrayBuffer) {
+    const compiled = await WebAssembly.compile(options.wasm);
+    await initWithWasmModule(compiled);
+    return;
+  }
+  await loadWasm();
+}
+async function collect(image) {
+  const chunks = [];
+  let total = 0;
+  for await (const chunk of image) {
+    chunks.push(chunk);
+    total += chunk.byteLength;
+  }
+  const merged = new Uint8Array(total);
+  let offset = 0;
+  for (const chunk of chunks) {
+    merged.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return {
+    data: merged.buffer.slice(merged.byteOffset, merged.byteOffset + merged.byteLength),
+    info: await image.info,
+    stats: await image.stats
   };
 }
-function resizePixelBuffer(srcPixels, srcWidth, srcHeight, dstWidth, dstHeight) {
-  if (srcWidth === dstWidth && srcHeight === dstHeight) {
-    return srcPixels;
-  }
-  const state = createResizeState(srcWidth, srcHeight, dstWidth, dstHeight);
-  const outputRows = new Array(dstHeight);
-  const srcRowSize = srcWidth * 3;
-  for (let y = 0; y < srcHeight; y++) {
-    const srcRow = srcPixels.subarray(y * srcRowSize, (y + 1) * srcRowSize);
-    const outputScanlines = processScanline(state, srcRow, y);
-    for (const scanline of outputScanlines) {
-      outputRows[scanline.y] = scanline.data;
+function toReadableStream(image) {
+  const iterator = image[Symbol.asyncIterator]();
+  return new ReadableStream({
+    async pull(controller) {
+      const { value, done } = await iterator.next();
+      if (done) {
+        controller.close();
+        return;
+      }
+      controller.enqueue(value);
+    },
+    async cancel(reason) {
+      if (typeof iterator.return === "function") {
+        await iterator.return(reason);
+      }
     }
-  }
-  const remaining = flushResize(state);
-  for (const scanline of remaining) {
-    outputRows[scanline.y] = scanline.data;
-  }
-  const dstRowSize = dstWidth * 3;
-  const result = new Uint8Array(dstWidth * dstHeight * 3);
-  for (let y = 0; y < dstHeight; y++) {
-    if (outputRows[y]) {
-      result.set(outputRows[y], y * dstRowSize);
-    }
-  }
-  return result;
+  });
 }
-async function encodeToJpeg(pixels, width, height, quality) {
-  const encoder = await createEncoder(width, height, quality);
-  const result = await encoder.encode(pixels);
-  encoder.dispose();
-  return result;
+function toResponse(image, init = {}) {
+  const headers = new Headers(init.headers);
+  headers.set("Content-Type", "image/jpeg");
+  return new Response(toReadableStream(image), {
+    ...init,
+    headers
+  });
 }
 
-// src/index.ts
-var sip = {
-  process: process2,
-  probe,
-  detectImageFormat,
-  initStreaming,
-  isStreamingAvailable
-};
-
-export { WasmJpegDecoder, WasmJpegEncoder, WasmPngDecoder, calculateDctScaleFactor, calculateOptimalScale, calculateTargetDimensions, createResizeState, detectImageFormat, flushResize, getWasmModule, initStreaming, initWithWasmModule, isStreamingAvailable, isWasmAvailable, loadWasm, probe, process2 as process, processJpegStreaming, processScanline, sip };
+export { collect, decode, encodeJpeg, inspect, ready, resize, toReadableStream, toResponse, transform };
 //# sourceMappingURL=index.js.map
 //# sourceMappingURL=index.js.map

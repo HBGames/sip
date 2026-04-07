@@ -1,13 +1,69 @@
 import type { ImageFormat, Scanline } from '../types';
 import type { Decoder } from './types';
 
+type CodecWasmBinary = ArrayBuffer | Uint8Array | WebAssembly.Module;
+
+/**
+ * Detect Cloudflare Workers/workerd runtime even when node compat is enabled.
+ */
+function isCloudflareWorker(): boolean {
+  const cacheStorage = (globalThis as { caches?: CacheStorage & { default?: Cache } }).caches;
+  return typeof cacheStorage !== 'undefined' && typeof cacheStorage.default !== 'undefined';
+}
+
+function getPreloadedCodecBinary(format: 'avif' | 'webp'): CodecWasmBinary | null {
+  const globalValue = (globalThis as Record<string, unknown>).__SIP_CODEC_WASM__;
+  if (!globalValue || typeof globalValue !== 'object') {
+    return null;
+  }
+
+  const formatValue = (globalValue as Record<string, unknown>)[format];
+  if (
+    formatValue instanceof ArrayBuffer ||
+    formatValue instanceof Uint8Array ||
+    formatValue instanceof WebAssembly.Module
+  ) {
+    return formatValue;
+  }
+
+  return null;
+}
+
 /**
  * Check if running in Node.js environment
  */
 function isNode(): boolean {
+  if (isCloudflareWorker()) {
+    return false;
+  }
+
   return typeof process !== 'undefined' &&
          process.versions != null &&
          process.versions.node != null;
+}
+
+async function initCodecWithBinary(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  initFn: (module: WebAssembly.Module) => Promise<any>,
+  wasmSource: CodecWasmBinary
+): Promise<void> {
+  if (wasmSource instanceof WebAssembly.Module) {
+    await initFn(wasmSource);
+    return;
+  }
+
+  let buffer: ArrayBuffer;
+
+  if (wasmSource instanceof Uint8Array) {
+    const copy = new Uint8Array(wasmSource.byteLength);
+    copy.set(wasmSource);
+    buffer = copy.buffer;
+  } else {
+    buffer = wasmSource;
+  }
+
+  const wasmModule = await WebAssembly.compile(buffer);
+  await initFn(wasmModule);
 }
 
 /**
@@ -69,7 +125,10 @@ export class SimpleDecoder implements Decoder {
     switch (this.format) {
       case 'avif': {
         const { default: decode, init } = await import('@jsquash/avif/decode.js');
-        if (isNode()) {
+        const preloaded = getPreloadedCodecBinary('avif');
+        if (preloaded) {
+          await initCodecWithBinary(init, preloaded);
+        } else if (isNode()) {
           await initCodecForNode(init, '@jsquash/avif/codec/dec/avif_dec.wasm');
         }
         this.decodeFn = decode;
@@ -78,7 +137,10 @@ export class SimpleDecoder implements Decoder {
       }
       case 'webp': {
         const { default: decode, init } = await import('@jsquash/webp/decode.js');
-        if (isNode()) {
+        const preloaded = getPreloadedCodecBinary('webp');
+        if (preloaded) {
+          await initCodecWithBinary(init, preloaded);
+        } else if (isNode()) {
           await initCodecForNode(init, '@jsquash/webp/codec/dec/webp_dec.wasm');
         }
         this.decodeFn = decode;

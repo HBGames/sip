@@ -1,5 +1,9 @@
 {
   "name": "sip-test",
   "compatibility_date": "2024-12-01",
-  "main": "tests/worker-entry.ts"
+  "main": "tests/worker-entry.ts",
+  "assets": {
+    "directory": "./tests/fixtures",
+    "binding": "ASSETS"
+  }
 }

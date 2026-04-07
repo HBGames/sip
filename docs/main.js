@@ -6,12 +6,11 @@ import './styles.css'
 const state = reactive({
   installTool: 'pnpm',
   stars: '',
-  // Demo state
   demoMaxWidth: '1024',
   demoMaxHeight: '1024',
-  demoQuality: '85',
+  demoQuality: '82',
   demoError: '',
-  demoInputInfo: '',
+  demoInputInfo: 'Sample image ready. Upload your own or process this one as a raw request body.',
   demoOutputInfo: '',
   demoInputUrl: '/sample.png',
   demoOutputUrl: '',
@@ -19,7 +18,6 @@ const state = reactive({
   demoHasResult: false,
 })
 
-// Fetch GitHub star count
 fetch('https://api.github.com/repos/standardagents/sip')
   .then((r) => r.json())
   .then((data) => {
@@ -39,7 +37,6 @@ const installCommands = {
   bun: 'bun add @standardagents/sip',
 }
 
-// SVG logos for package managers (white/light versions)
 const pmLogos = {
   pnpm: '<svg viewBox="0 0 24 24" fill="#f9ad00"><rect x="0" y="0" width="7" height="7"/><rect x="8.5" y="0" width="7" height="7"/><rect x="17" y="0" width="7" height="7"/><rect x="17" y="8.5" width="7" height="7"/><rect x="0" y="17" width="7" height="7"/><rect x="8.5" y="17" width="7" height="7"/><rect x="17" y="17" width="7" height="7"/><rect x="8.5" y="8.5" width="7" height="7"/></svg>',
   npm: '<svg viewBox="0 0 24 24" fill="#cb3837"><path d="M0 0v24h24V0H0zm19.2 19.2H12V7.2H7.2v12H4.8V4.8h14.4v14.4z"/></svg>',
@@ -48,9 +45,9 @@ const pmLogos = {
 }
 
 const stats = [
-  { value: '<1 MB', label: 'Peak memory on large JPEG processing' },
-  { value: '128 MB safe', label: 'Built for Cloudflare Workers limits' },
-  { value: '4 formats', label: 'JPEG, PNG, WebP*, AVIF* input support' },
+  { value: 'Raw stream', label: 'Use request bodies directly instead of buffering uploads in userland.' },
+  { value: 'Peak shown', label: 'The demo reports measured SIP memory, not guessed heap size.' },
+  { value: '4 formats', label: 'JPEG, PNG, WebP, and AVIF inputs. Output is always JPEG.' },
 ]
 
 const tocItems = [
@@ -58,20 +55,17 @@ const tocItems = [
   { id: 'overview', label: 'Overview' },
   { id: 'install', label: 'Installation' },
   { id: 'api', label: 'API' },
-  { id: 'api-probe', label: 'probe()', indent: true },
-  { id: 'api-process', label: 'sip.process()', indent: true },
-  { id: 'api-streaming', label: 'processJpegStreaming()', indent: true },
-  { id: 'api-init', label: 'initStreaming()', indent: true },
+  { id: 'api-ready', label: 'ready()', indent: true },
+  { id: 'api-inspect', label: 'inspect()', indent: true },
+  { id: 'api-transform', label: 'transform()', indent: true },
+  { id: 'api-output', label: 'output helpers', indent: true },
   { id: 'formats', label: 'Format Support' },
   { id: 'wasm', label: 'WASM Build' },
   { id: 'examples', label: 'Examples' },
+  { id: 'testing', label: 'Testing' },
   { id: 'caveats', label: 'Caveats' },
 ]
 
-/**
- * After the app mounts, inject highlighted code into all
- * placeholder elements. This avoids shipping shiki to the client.
- */
 function injectHighlightedCode() {
   for (const [key, markup] of Object.entries(highlighted)) {
     const el = document.querySelector(`[data-code="${key}"]`)
@@ -80,54 +74,68 @@ function injectHighlightedCode() {
 }
 
 function formatBytes(bytes) {
+  if (!Number.isFinite(bytes) || bytes < 0) return '—'
   if (bytes < 1024) return bytes + ' B'
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB'
   return (bytes / (1024 * 1024)).toFixed(2) + ' MB'
 }
 
-// Store file outside reactive state so it doesn't get proxied
 let pendingFile = null
 
-function handleDemoFileSelect(e) {
-  const file = e.target.files?.[0]
-  if (!file) return
-  if (state.demoInputUrl && state.demoInputUrl.startsWith('blob:')) {
-    URL.revokeObjectURL(state.demoInputUrl)
-  }
-  state.demoInputUrl = URL.createObjectURL(file)
-  pendingFile = file
-  // Clear previous result
-  state.demoHasResult = false
-  state.demoOutputInfo = ''
-  state.demoError = ''
+function clearOutputUrl() {
   if (state.demoOutputUrl && state.demoOutputUrl.startsWith('blob:')) {
     URL.revokeObjectURL(state.demoOutputUrl)
   }
   state.demoOutputUrl = ''
 }
 
-async function processDemo() {
-  let file = pendingFile
+function handleDemoFileSelect(e) {
+  const file = e.target.files?.[0]
+  if (!file) return
 
-  // If no pending file, fetch the sample image
-  if (!file) {
-    const res = await fetch(state.demoInputUrl)
-    const blob = await res.blob()
-    file = new File([blob], 'sample.png', { type: blob.type })
+  if (state.demoInputUrl && state.demoInputUrl.startsWith('blob:')) {
+    URL.revokeObjectURL(state.demoInputUrl)
   }
+
+  state.demoInputUrl = URL.createObjectURL(file)
+  pendingFile = file
+  state.demoInputInfo = `Selected: ${(file.type || 'unknown').replace('image/', '').toUpperCase()} — ${formatBytes(file.size)}`
+  state.demoHasResult = false
+  state.demoOutputInfo = ''
+  state.demoError = ''
+  clearOutputUrl()
+}
+
+async function getDemoFile() {
+  if (pendingFile) {
+    return pendingFile
+  }
+
+  const res = await fetch(state.demoInputUrl)
+  const blob = await res.blob()
+  return new File([blob], 'sample.png', { type: blob.type || 'image/png' })
+}
+
+async function processDemo() {
+  const file = await getDemoFile()
 
   state.demoError = ''
   state.demoHasResult = false
   state.demoProcessing = true
 
-  const formData = new FormData()
-  formData.append('image', file)
-  formData.append('maxWidth', state.demoMaxWidth)
-  formData.append('maxHeight', state.demoMaxHeight)
-  formData.append('quality', state.demoQuality)
+  const url = new URL('/api/process', window.location.origin)
+  url.searchParams.set('width', state.demoMaxWidth)
+  url.searchParams.set('height', state.demoMaxHeight)
+  url.searchParams.set('quality', state.demoQuality)
 
   try {
-    const res = await fetch('/api/process', { method: 'POST', body: formData })
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: {
+        'content-type': file.type || 'application/octet-stream',
+      },
+      body: file,
+    })
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({ error: 'Processing failed' }))
@@ -137,27 +145,27 @@ async function processDemo() {
     }
 
     const blob = await res.blob()
-
-    const inputW = res.headers.get('X-Input-Width')
-    const inputH = res.headers.get('X-Input-Height')
-    const inputFmt = res.headers.get('X-Input-Format')
+    const inputWidth = Number(res.headers.get('X-Input-Width'))
+    const inputHeight = Number(res.headers.get('X-Input-Height'))
     const inputBytes = Number(res.headers.get('X-Input-Bytes'))
-    const outputW = res.headers.get('X-Output-Width')
-    const outputH = res.headers.get('X-Output-Height')
+    const inputFormat = res.headers.get('X-Input-Format') || 'unknown'
+    const outputWidth = Number(res.headers.get('X-Output-Width'))
+    const outputHeight = Number(res.headers.get('X-Output-Height'))
     const outputBytes = Number(res.headers.get('X-Output-Bytes'))
-    const theoreticalMem = Number(res.headers.get('X-Theoretical-Memory'))
-    const sipMem = Number(res.headers.get('X-Sip-Peak-Memory'))
-    const processingMs = res.headers.get('X-Processing-Ms')
-    const streaming = res.headers.get('X-Streaming')
+    const peakPipeline = Number(res.headers.get('X-Peak-Pipeline-Bytes'))
+    const peakCodec = Number(res.headers.get('X-Peak-Codec-Bytes'))
+    const processingMs = Number(res.headers.get('X-Elapsed-Ms'))
+    const notes = (res.headers.get('X-Stats-Notes') || '')
+      .split(',')
+      .map((value) => value.trim())
+      .filter(Boolean)
 
-    state.demoInputInfo = `Input: ${inputFmt?.toUpperCase()} ${inputW}\u00d7${inputH} \u2014 ${formatBytes(inputBytes)}`
-    state.demoOutputInfo = `Output: JPEG ${outputW}\u00d7${outputH} \u2014 used ${formatBytes(sipMem)} of memory vs ${formatBytes(theoreticalMem)} without sip \u2014 ${processingMs}ms`
+    state.demoInputInfo = `Input: ${inputFormat.toUpperCase()} ${inputWidth}\u00d7${inputHeight} — ${formatBytes(inputBytes)}`
+    state.demoOutputInfo = `Output: JPEG ${outputWidth}\u00d7${outputHeight} — ${formatBytes(outputBytes)} — peak SIP memory ${formatBytes(peakPipeline)}${peakCodec ? ` (codec share ${formatBytes(peakCodec)})` : ''} — ${processingMs}ms${notes.length ? ` — ${notes.join(', ')}` : ''}`
     state.demoProcessing = false
     state.demoHasResult = true
 
-    if (state.demoOutputUrl && state.demoOutputUrl.startsWith('blob:')) {
-      URL.revokeObjectURL(state.demoOutputUrl)
-    }
+    clearOutputUrl()
     state.demoOutputUrl = URL.createObjectURL(blob)
   } catch (err) {
     state.demoError = err instanceof Error ? err.message : 'Network error'
@@ -202,14 +210,19 @@ const App = component(() => html`
 
     <div class="shell">
       <section class="hero">
+        <div class="hero__badge">
+          <span class="hero__badge-dot"></span>
+          <span>Measured peak memory, not heap-size guesswork</span>
+        </div>
         <img src="./sip.png" alt="sip" class="hero__banner" />
         <h1 class="hero__title">
           <span class="hero__title-line">Small Image</span>
           <span class="hero__title-accent">Processor</span>
         </h1>
         <p class="hero__sub">
-          Ultra memory-efficient image processing for Cloudflare Workers.
-          Probe, resize, and encode images with less than 1 MB peak RAM.
+          Stream-first image processing for Cloudflare Workers. Pass a raw
+          request body through the pipeline, resize it, and return JPEG without
+          turning every request into a giant ArrayBuffer by accident.
         </p>
         <div class="hero__actions">
           <a href="#install" class="btn btn--primary">Get started</a>
@@ -225,12 +238,10 @@ const App = component(() => html`
           </a>
         </div>
         <div class="hero__pipeline">
-          <span class="hero__pipeline-step">Input</span>
-          <span class="hero__pipeline-step">Probe</span>
-          <span class="hero__pipeline-step hero__pipeline-step--active">Decode</span>
-          <span class="hero__pipeline-step hero__pipeline-step--active">Resize</span>
-          <span class="hero__pipeline-step hero__pipeline-step--active">Encode</span>
-          <span class="hero__pipeline-step">JPEG</span>
+          <span class="hero__pipeline-step">request.body</span>
+          <span class="hero__pipeline-step hero__pipeline-step--active">inspect()</span>
+          <span class="hero__pipeline-step hero__pipeline-step--active">transform()</span>
+          <span class="hero__pipeline-step">toResponse()</span>
         </div>
       </section>
 
@@ -250,8 +261,15 @@ const App = component(() => html`
           <section id="demo">
             <h2>Try it</h2>
             <p>
-              Process an image on a Cloudflare Worker. Pick your own or use the
-              sample below.
+              Upload an image or use the sample below. The docs worker posts the
+              file itself as the request body, then reports measured SIP peak
+              memory for the transform.
+            </p>
+            <p>
+              The headline number is <strong>peak SIP memory</strong>, meaning the
+              maximum memory SIP itself needed while processing the image. The
+              smaller codec number is just a breakdown for the decoder/encoder part
+              of that total, not a separate user-facing metric.
             </p>
             <div class="demo">
               <label class="demo__input-area">
@@ -321,19 +339,27 @@ const App = component(() => html`
           <section id="overview">
             <h2>Overview</h2>
             <p>
-              Cloudflare Workers have a 128 MB memory ceiling. A 25 megapixel JPEG
-              decoded into raw pixels consumes roughly 100 MB, which is enough to crash
-              the request. sip solves this with scanline streaming and DCT scaling so
-              peak memory stays under 1 MB regardless of input size.
+              Cloudflare Workers have a 128 MB memory ceiling. The real goal is
+              not only making the math inside the library efficient, but also
+              making the Worker integration efficient: a raw
+              <code>request.body</code> should be able to flow through the image
+              pipeline without first being fully buffered in userland.
             </p>
-            <p>The processing pipeline:</p>
+            <p>
+              sip now has a simpler order: <code>ready()</code> loads the WASM
+              path, <code>inspect()</code> reads headers and returns a reusable
+              source, <code>transform()</code> is the convenience path, and
+              <code>toResponse()</code> or <code>collect()</code> decide whether
+              the output stays streamed or becomes a full buffer.
+            </p>
+            <p>The Worker-first pipeline:</p>
             <div class="shiki-block" data-code="pipeline"></div>
             <h3>Key capabilities</h3>
             <ul>
-              <li><strong>Probe without decoding</strong> — read format, dimensions, and alpha from magic bytes alone.</li>
-              <li><strong>Two-row resize buffer</strong> — bilinear interpolation using only the minimum rows needed. Memory stays flat.</li>
-              <li><strong>WASM streaming</strong> — libjpeg-turbo DCT downscaling and scanline processing for oversized uploads.</li>
-              <li><strong>Automatic quality fallback</strong> — retries with lower quality and smaller dimensions to meet byte budgets.</li>
+              <li><strong>Raw upload path</strong> — pass <code>request.body</code> or a full <code>Request</code> directly into the transform pipeline.</li>
+              <li><strong>Reusable inspection</strong> — <code>inspect()</code> returns both metadata and a reusable source for the later decode step.</li>
+              <li><strong>Measured peak memory</strong> — the docs demo shows SIP's measured processing bytes rather than WASM heap capacity.</li>
+              <li><strong>Explicit buffering</strong> — <code>collect()</code> still exists, but it is a deliberate opt-in instead of the default shape.</li>
             </ul>
           </section>
 
@@ -360,52 +386,59 @@ const App = component(() => html`
               </div>
             </div>
             <p>
-              The package ships as ESM with TypeScript declarations. WASM artifacts for
-              the streaming JPEG/PNG path are built separately — see
-              <a href="#wasm">WASM Build</a> below.
+              The package ships as ESM with TypeScript declarations. The JPEG and
+              PNG fast paths also need the SIP WASM loader registered once per isolate.
             </p>
           </section>
 
           <section id="api">
             <h2>API</h2>
             <p>
-              The public surface is intentionally narrow: three entrypoints that cover
-              inspection, processing, and WASM warm-up.
+              The public surface is now small and ordered. The important distinction
+              is between the stream-friendly path and the explicit buffering path.
             </p>
 
-            <article id="api-probe" class="api-entry">
-              <h3>probe(input)</h3>
+            <article id="api-ready" class="api-entry">
+              <h3>ready(options?)</h3>
               <p>
-                Inspect an image's format, dimensions, and alpha support by reading
-                magic bytes and header data. No full decode is performed.
+                Load the SIP WASM module before the first hot request. In Workers,
+                memoize it once per isolate and reuse it across requests.
               </p>
-              <div class="shiki-block" data-code="probe"></div>
+              <div class="shiki-block" data-code="loader"></div>
+            </article>
+
+            <article id="api-inspect" class="api-entry">
+              <h3>inspect(input)</h3>
               <p>
-                Fast enough to run before validation or routing decisions. Accepts
-                <code>ArrayBuffer</code> or <code>Uint8Array</code>.
+                Read just enough header bytes to determine format, dimensions,
+                and alpha. For streamed inputs it returns a reusable
+                <code>source</code> so you can inspect before you transform.
+              </p>
+              <div class="shiki-block" data-code="inspect"></div>
+              <p>
+                Accepts <code>Request</code>, <code>Response</code>,
+                <code>ReadableStream</code>, <code>AsyncIterable</code>,
+                <code>ArrayBuffer</code>, <code>Uint8Array</code>, and
+                <code>Blob</code>.
               </p>
             </article>
 
-            <article id="api-process" class="api-entry">
-              <h3>sip.process(input, options)</h3>
+            <article id="api-transform" class="api-entry">
+              <h3>transform(input, options)</h3>
               <p>
-                Decode, resize, and encode to JPEG in a single call. This is the
-                main entrypoint for image processing.
+                Convenience path for decode, resize, and JPEG encode. This is the
+                API most Worker code should start with.
               </p>
-              <div class="shiki-block" data-code="process"></div>
+              <div class="shiki-block" data-code="workerStream"></div>
               <h4>Options</h4>
               <div class="option-list">
                 <div class="option">
-                  <code>maxWidth</code>
-                  <span>Maximum output width in pixels. Aspect ratio is preserved.</span>
+                  <code>width</code>
+                  <span>Fit the output within this width while preserving aspect ratio. sip never upscales.</span>
                 </div>
                 <div class="option">
-                  <code>maxHeight</code>
-                  <span>Maximum output height in pixels. Aspect ratio is preserved.</span>
-                </div>
-                <div class="option">
-                  <code>maxBytes</code>
-                  <span>Target file size. sip retries with lower quality (down to 45) then smaller dimensions.</span>
+                  <code>height</code>
+                  <span>Fit the output within this height while preserving aspect ratio. sip never upscales.</span>
                 </div>
                 <div class="option">
                   <code>quality</code>
@@ -414,44 +447,31 @@ const App = component(() => html`
               </div>
             </article>
 
-            <article id="api-streaming" class="api-entry">
-              <h3>processJpegStreaming(input, options)</h3>
+            <article class="api-entry">
+              <h3>decode() / resize() / encodeJpeg()</h3>
               <p>
-                Process a JPEG using the ultra-efficient WASM scanline pipeline directly.
-                Unlike <code>sip.process()</code> which auto-detects format and selects the
-                best path, this function targets the JPEG streaming path explicitly.
-                A <code>processPngStreaming()</code> equivalent is also exported.
+                When you want the call site to mirror the actual pipeline, use the
+                lower-level building blocks directly.
               </p>
-              <div class="shiki-block" data-code="streamingApi"></div>
-              <p>
-                Both functions use DCT scaling and scanline-by-scanline processing internally
-                so peak memory stays under 1 MB. The streaming is about memory-efficient
-                <em>processing</em> — the result is still a complete <code>ArrayBuffer</code>,
-                not a readable stream.
-              </p>
+              <div class="shiki-block" data-code="manual"></div>
             </article>
 
-            <article id="api-init" class="api-entry">
-              <h3>initStreaming()</h3>
+            <article id="api-output" class="api-entry">
+              <h3>toReadableStream() / toResponse() / collect()</h3>
               <p>
-                Pre-warm the WASM streaming path. Optional but useful for paying startup cost
-                early, for example during a Workers fetch handler warm-up.
+                <code>toResponse()</code> is the Worker-first output helper.
+                <code>collect()</code> is the explicit buffered path when you
+                actually need the final JPEG bytes in memory.
               </p>
-              <div class="shiki-block" data-code="initStreaming"></div>
-              <p>
-                Returns a boolean indicating whether the streaming path is available.
-                If WASM is not built or the loader is not registered, returns false
-                and sip falls back to the @jsquash path.
-              </p>
+              <div class="shiki-block" data-code="collect"></div>
             </article>
           </section>
 
           <section id="formats">
             <h2>Format Support</h2>
             <p>
-              sip accepts four input formats and always outputs JPEG. The WASM decoders
-              (JPEG and PNG) provide the best memory profile. WebP and AVIF fall back to
-              full-decode via @jsquash.
+              sip accepts four input formats and always outputs JPEG. The paths
+              are not all equal today, and the docs should reflect that.
             </p>
             <div class="format-grid">
               <div class="format-grid__header">
@@ -463,114 +483,107 @@ const App = component(() => html`
               <div class="format-row">
                 <span class="format-row__format">JPEG</span>
                 <span class="format-row__decoder">libjpeg-turbo</span>
-                <span>DCT scaling + scanline</span>
-                <span>Decode at 1/8 scale for huge savings</span>
+                <span>DCT scaling + incremental scanline decode</span>
+                <span>Best low-memory path and the main sub-1 MB target.</span>
               </div>
               <div class="format-row">
                 <span class="format-row__format">PNG</span>
                 <span class="format-row__decoder">libspng</span>
-                <span>Row-by-row progressive</span>
-                <span>Full resolution decode, stream output</span>
+                <span>Row-oriented decode + streamed JPEG encode</span>
+                <span>More memory-efficient than a full pixel buffer, but not as strong as JPEG yet.</span>
               </div>
               <div class="format-row">
                 <span class="format-row__format">WebP</span>
                 <span class="format-row__decoder">@jsquash/webp</span>
-                <span>Full decode</span>
-                <span>No WASM yet — higher memory</span>
+                <span>Buffered decode fallback</span>
+                <span>Supported in Workers and tests, but higher memory than JPEG or PNG.</span>
               </div>
               <div class="format-row">
                 <span class="format-row__format">AVIF</span>
                 <span class="format-row__decoder">@jsquash/avif</span>
-                <span>Full decode</span>
-                <span>No WASM yet — higher memory</span>
+                <span>Buffered decode fallback</span>
+                <span>Supported, higher memory, and a clear candidate for a native decoder later.</span>
               </div>
             </div>
             <p>
-              Output is always JPEG. There is no PNG or WebP encoder — this simplifies
-              the output path and provides universal compatibility.
+              Output is always JPEG. There is no PNG, WebP, or AVIF encoder in
+              the current public surface.
             </p>
           </section>
 
           <section id="wasm">
             <h2>WASM Build</h2>
             <p>
-              The streaming JPEG and PNG path requires WASM artifacts compiled from C
-              via Emscripten. The package works without them (falling back to @jsquash),
-              but the WASM path is where sip gets its real leverage.
+              The low-memory JPEG and PNG paths require the SIP WASM artifacts
+              built from C with Emscripten.
             </p>
-            <h3>Prerequisites</h3>
-            <p>Install the Emscripten SDK:</p>
-            <div class="shiki-block" data-code="emsdk"></div>
-            <h3>Build</h3>
-            <div class="shiki-block" data-code="wasmBuild"></div>
             <p>
               Output lands in <code>dist/sip.js</code> and <code>dist/sip.wasm</code>.
-              The WASM file is gitignored — CI must run <code>pnpm build:wasm</code>
-              before publishing.
+              CI and release flows should rebuild them before publish.
             </p>
-            <h3>Registering the loader</h3>
-            <p>
-              To activate the streaming path at runtime, register a global WASM loader
-              before calling initStreaming:
-            </p>
-            <div class="shiki-block" data-code="registerLoader"></div>
+            <div class="shiki-block" data-code="build"></div>
           </section>
 
           <section id="examples">
             <h2>Examples</h2>
             <p>
-              All examples target Cloudflare Workers. sip is designed to run in this
-              environment where the 128 MB memory ceiling makes traditional image
-              libraries impractical.
+              These examples keep the Worker path explicit: stream in, transform,
+              and only buffer when you really mean to.
             </p>
 
-            <h3>Upload handler with R2 storage</h3>
-            <p>Process user uploads and store normalized images in R2:</p>
-            <div class="shiki-block" data-code="exampleUpload"></div>
+            <h3>Worker fetch handler with raw request bodies</h3>
+            <div class="shiki-block" data-code="workerStream"></div>
 
-            <h3>On-the-fly thumbnail generation</h3>
-            <p>Generate thumbnails from R2 originals with aggressive caching:</p>
-            <div class="shiki-block" data-code="exampleThumb"></div>
+            <h3>Inspect before routing or validation</h3>
+            <div class="shiki-block" data-code="inspect"></div>
 
-            <h3>Validate and passthrough</h3>
-            <p>Probe first, skip processing when the image is already small enough:</p>
-            <div class="shiki-block" data-code="exampleValidate"></div>
+            <h3>Manual decode → resize → encode</h3>
+            <div class="shiki-block" data-code="manual"></div>
 
-            <h3>Durable Object with multiple variants</h3>
-            <p>Generate full-size and thumbnail variants inside a Durable Object:</p>
-            <div class="shiki-block" data-code="exampleDO"></div>
+            <h3>Collect full bytes when a test or API client needs them</h3>
+            <div class="shiki-block" data-code="collect"></div>
+          </section>
+
+          <section id="testing">
+            <h2>Testing</h2>
+            <p>
+              The repo now tests JPEG, PNG, WebP, and AVIF with committed sample
+              fixtures. Worker integration runs in Miniflare/workerd, and the
+              Node-side memory harness checks for obvious drift across repeated
+              large JPEG transforms.
+            </p>
+            <p>
+              The docs demo shows SIP-reported processing peaks. The automated
+              suite also checks behavior from outside the worker process so there
+              is a second memory signal besides the in-library counters.
+            </p>
+            <div class="shiki-block" data-code="memory"></div>
           </section>
 
           <section id="caveats">
             <h2>Caveats</h2>
-            <h3>WebP and AVIF memory usage</h3>
+            <h3>Peak memory shown on this site</h3>
             <p>
-              sip currently uses <a href="https://github.com/nicktomlin/nicktomlin.github.io">@jsquash</a>
-              to decode WebP and AVIF inputs. Unlike the JPEG and PNG paths which stream
-              through WASM scanline-by-scanline, @jsquash performs a full in-memory decode
-              of the entire image before sip can begin processing.
+              The demo shows SIP's measured processing memory. That is useful and
+              intentional, but it is not the same thing as total isolate RSS.
             </p>
+            <h3>What buffers and what does not</h3>
             <p>
-              This means WebP and AVIF inputs will consume significantly more memory than
-              JPEG or PNG inputs of the same dimensions. For very large WebP/AVIF images
-              in a 128 MB Workers environment, this can still cause memory pressure.
-            </p>
-            <p>
-              Replacing @jsquash with dedicated WASM streaming decoders for WebP and AVIF
-              is on the roadmap. When implemented, these formats will achieve the same
-              sub-1 MB peak memory profile that JPEG and PNG already have.
+              <code>request.formData()</code>, <code>request.arrayBuffer()</code>,
+              and <code>collect()</code> all buffer. If your goal is the low-memory
+              Worker path, prefer <code>request.body</code> into
+              <code>transform()</code> and <code>toResponse()</code>.
             </p>
             <h3>Output is always JPEG</h3>
             <p>
-              sip does not support PNG, WebP, or AVIF output. All processed images are
-              encoded as JPEG. This keeps the encoder path simple and universally compatible,
-              but means alpha channels are discarded during processing.
+              Alpha is discarded during processing. If you need PNG/WebP/AVIF output,
+              that is outside the current scope of the library.
             </p>
-            <h3>maxBytes is best-effort</h3>
+            <h3>WebP and AVIF use more memory today</h3>
             <p>
-              The byte budget option retries encoding with progressively lower quality
-              (down to 45) and then falls back to smaller dimensions. The final output
-              may slightly exceed the target in edge cases.
+              WebP and AVIF still use fallback decoders rather than native SIP
+              streaming decoders. They are supported and tested, but they do not
+              currently match the JPEG memory profile.
             </p>
           </section>
         </div>
@@ -596,7 +609,6 @@ const root = document.querySelector('#app')
 if (!root) throw new Error('Missing #app root')
 render(root, App())
 
-// Inject syntax-highlighted code and PM logos after mount
 requestAnimationFrame(() => {
   injectHighlightedCode()
   for (const [pm, svg] of Object.entries(pmLogos)) {
