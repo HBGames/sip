@@ -303,6 +303,7 @@ function probe(input) {
 
 // src/input.ts
 var INSPECT_TARGETS = [64, 512, 4096, 16384, 65536, 262144];
+var STREAM_CHUNK_TARGET = 64 * 1024;
 function sliceArrayBuffer(view) {
   const copy = new Uint8Array(view.byteLength);
   copy.set(view);
@@ -343,11 +344,46 @@ async function* iterateReadableStream(stream) {
     reader.releaseLock();
   }
 }
-function getAsyncIterable(input) {
-  if (typeof input[Symbol.asyncIterator] === "function") {
-    return input;
+async function* coalesceAsyncIterable(input, target = STREAM_CHUNK_TARGET) {
+  let pending = [];
+  let total = 0;
+  const flush = () => {
+    if (total === 0) {
+      return null;
+    }
+    const merged2 = concatChunks(pending, total);
+    pending = [];
+    total = 0;
+    return merged2;
+  };
+  for await (const rawChunk of input) {
+    const chunk = normalizeChunk(rawChunk);
+    if (chunk.byteLength >= target && total === 0) {
+      yield chunk;
+      continue;
+    }
+    pending.push(chunk);
+    total += chunk.byteLength;
+    if (total >= target) {
+      const merged2 = flush();
+      if (merged2) {
+        yield merged2;
+      }
+    }
   }
-  return iterateReadableStream(input);
+  const merged = flush();
+  if (merged) {
+    yield merged;
+  }
+}
+function getAsyncIterable(input) {
+  if (typeof ReadableStream !== "undefined" && input instanceof ReadableStream) {
+    return coalesceAsyncIterable(iterateReadableStream(input));
+  }
+  if (typeof input[Symbol.asyncIterator] === "function") {
+    return coalesceAsyncIterable(input);
+  }
+  return coalesceAsyncIterable(input);
 }
 var BytesInputSource = class {
   constructor(bytes, formatHint) {
@@ -750,7 +786,17 @@ var WasmJpegDecoder = class {
    */
   init(data) {
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-    this.pushInput(bytes, true);
+    let ptr = 0;
+    try {
+      ptr = copyToWasm(this.module, bytes);
+      if (this.module._sip_decoder_set_source(this.decoder, ptr, bytes.byteLength) !== 0) {
+        throw new Error("Failed to set buffered JPEG source");
+      }
+    } finally {
+      if (ptr) {
+        this.module._free(ptr);
+      }
+    }
     const header = this.readHeaderStep();
     if (header !== "ready") {
       throw new Error("Incomplete JPEG header");
@@ -1243,6 +1289,24 @@ async function* iterateUint8ArrayRows(pixels, width, height) {
     };
   }
 }
+async function* iterateInputChunks(source) {
+  const iterator = source.open()[Symbol.asyncIterator]();
+  let current = await iterator.next();
+  if (current.done) {
+    return;
+  }
+  while (true) {
+    const next = await iterator.next();
+    yield {
+      chunk: current.value,
+      isFinal: next.done === true
+    };
+    if (next.done === true) {
+      return;
+    }
+    current = next;
+  }
+}
 async function* decodeSourceInternal(input) {
   const prepared = await prepareInputSource(input);
   const info = await inspectSource(prepared);
@@ -1255,8 +1319,8 @@ async function* decodeSourceInternal(input) {
     try {
       let headerReady = false;
       let started = false;
-      for await (const chunk of prepared.open()) {
-        decoder2.pushInput(chunk, false);
+      for await (const { chunk, isFinal } of iterateInputChunks(prepared)) {
+        decoder2.pushInput(chunk, isFinal);
         if (!headerReady) {
           const headerStep = decoder2.readHeaderStep();
           if (headerStep === "ready") {
@@ -1284,7 +1348,6 @@ async function* decodeSourceInternal(input) {
           yield scanline;
         }
       }
-      decoder2.pushInput(new Uint8Array(0), true);
       if (!headerReady) {
         if (decoder2.readHeaderStep() !== "ready") {
           throw new Error("Incomplete JPEG image");
@@ -1419,10 +1482,10 @@ async function* runJpegTransform(source, info, options, infoDeferred, stats) {
   const decoder = new WasmJpegDecoder();
   const encoder = new WasmJpegEncoder();
   let resizeState = createResizeState(1, 1, target.width, target.height);
-  let headerReady = false;
-  let started = false;
   let decodeWidth = info.width;
   let decodeHeight = info.height;
+  let headerReady = false;
+  let started = false;
   const refresh = () => {
     const resizeBytes = (resizeState.bufferA?.byteLength ?? 0) + (resizeState.bufferB?.byteLength ?? 0);
     const codecBytes = decoder.getBufferedInputSize() + decoder.getRowBufferSize() + encoder.getBufferedOutputSize() + encoder.getRowBufferSize();
@@ -1430,9 +1493,9 @@ async function* runJpegTransform(source, info, options, infoDeferred, stats) {
     stats.update(decoder.getBufferedInputSize(), encoder.getBufferedOutputSize(), codecBytes, pipelineBytes);
   };
   try {
-    for await (const chunk of source.open()) {
+    for await (const { chunk, isFinal } of iterateInputChunks(source)) {
       stats.addBytesIn(chunk.byteLength);
-      decoder.pushInput(chunk, false);
+      decoder.pushInput(chunk, isFinal);
       refresh();
       if (!headerReady) {
         const headerStep = decoder.readHeaderStep();
@@ -1486,7 +1549,6 @@ async function* runJpegTransform(source, info, options, infoDeferred, stats) {
       }
     }
     stats.note(`jpeg-decoded=${decodeWidth}x${decodeHeight}`);
-    decoder.pushInput(new Uint8Array(0), true);
     refresh();
     if (!headerReady) {
       if (decoder.readHeaderStep() !== "ready") {

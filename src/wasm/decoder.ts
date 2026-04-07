@@ -55,7 +55,18 @@ export class WasmJpegDecoder {
    */
   init(data: ArrayBuffer | Uint8Array): { width: number; height: number } {
     const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
-    this.pushInput(bytes, true);
+    let ptr = 0;
+    try {
+      ptr = copyToWasm(this.module, bytes);
+      if (this.module._sip_decoder_set_source(this.decoder, ptr, bytes.byteLength) !== 0) {
+        throw new Error('Failed to set buffered JPEG source');
+      }
+    } finally {
+      if (ptr) {
+        this.module._free(ptr);
+      }
+    }
+
     const header = this.readHeaderStep();
     if (header !== 'ready') {
       throw new Error('Incomplete JPEG header');
@@ -213,4 +224,3 @@ export function calculateOptimalScale(
 
   return 1;
 }
-

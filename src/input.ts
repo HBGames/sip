@@ -2,6 +2,7 @@ import { probe } from './probe';
 import type { ByteInput, ImageInfo, ImageFormat, InputSource, InspectResult } from './types';
 
 const INSPECT_TARGETS = [64, 512, 4_096, 16_384, 65_536, 262_144];
+const STREAM_CHUNK_TARGET = 64 * 1024;
 
 type PreparedInputSource = InputSource & {
   ensureHeaderBytes(target: number): Promise<Uint8Array>;
@@ -57,12 +58,58 @@ async function* iterateReadableStream(stream: ReadableStream<Uint8Array>): Async
   }
 }
 
-function getAsyncIterable(input: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
-  if (typeof (input as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] === 'function') {
-    return input as AsyncIterable<Uint8Array>;
+async function* coalesceAsyncIterable(
+  input: AsyncIterable<Uint8Array>,
+  target = STREAM_CHUNK_TARGET
+): AsyncIterable<Uint8Array> {
+  let pending: Uint8Array[] = [];
+  let total = 0;
+
+  const flush = () => {
+    if (total === 0) {
+      return null;
+    }
+
+    const merged = concatChunks(pending, total);
+    pending = [];
+    total = 0;
+    return merged;
+  };
+
+  for await (const rawChunk of input) {
+    const chunk = normalizeChunk(rawChunk);
+    if (chunk.byteLength >= target && total === 0) {
+      yield chunk;
+      continue;
+    }
+
+    pending.push(chunk);
+    total += chunk.byteLength;
+
+    if (total >= target) {
+      const merged = flush();
+      if (merged) {
+        yield merged;
+      }
+    }
   }
 
-  return iterateReadableStream(input as ReadableStream<Uint8Array>);
+  const merged = flush();
+  if (merged) {
+    yield merged;
+  }
+}
+
+function getAsyncIterable(input: ReadableStream<Uint8Array> | AsyncIterable<Uint8Array>): AsyncIterable<Uint8Array> {
+  if (typeof ReadableStream !== 'undefined' && input instanceof ReadableStream) {
+    return coalesceAsyncIterable(iterateReadableStream(input));
+  }
+
+  if (typeof (input as AsyncIterable<Uint8Array>)[Symbol.asyncIterator] === 'function') {
+    return coalesceAsyncIterable(input as AsyncIterable<Uint8Array>);
+  }
+
+  return coalesceAsyncIterable(input as AsyncIterable<Uint8Array>);
 }
 
 class BytesInputSource implements PreparedInputSource {

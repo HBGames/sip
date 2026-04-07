@@ -121,4 +121,3 @@ describe('new API surface', () => {
     expect(total).toBeGreaterThan(0);
   });
 });
-

@@ -151,6 +151,32 @@ async function* iterateUint8ArrayRows(
   }
 }
 
+async function* iterateInputChunks(source: InputSource): AsyncIterable<{
+  chunk: Uint8Array;
+  isFinal: boolean;
+}> {
+  const iterator = source.open()[Symbol.asyncIterator]();
+  let current = await iterator.next();
+
+  if (current.done) {
+    return;
+  }
+
+  while (true) {
+    const next = await iterator.next();
+    yield {
+      chunk: current.value,
+      isFinal: next.done === true,
+    };
+
+    if (next.done === true) {
+      return;
+    }
+
+    current = next;
+  }
+}
+
 async function* decodeSourceInternal(
   input: ByteInput | InputSource
 ): AsyncIterable<Scanline> {
@@ -168,8 +194,8 @@ async function* decodeSourceInternal(
       let headerReady = false;
       let started = false;
 
-      for await (const chunk of prepared.open()) {
-        decoder.pushInput(chunk, false);
+      for await (const { chunk, isFinal } of iterateInputChunks(prepared)) {
+        decoder.pushInput(chunk, isFinal);
 
         if (!headerReady) {
           const headerStep = decoder.readHeaderStep();
@@ -200,8 +226,6 @@ async function* decodeSourceInternal(
           yield scanline;
         }
       }
-
-      decoder.pushInput(new Uint8Array(0), true);
 
       if (!headerReady) {
         if (decoder.readHeaderStep() !== 'ready') {
@@ -367,10 +391,10 @@ async function* runJpegTransform(
   const decoder = new WasmJpegDecoder();
   const encoder = new WasmJpegEncoder();
   let resizeState = createResizeState(1, 1, target.width, target.height);
-  let headerReady = false;
-  let started = false;
   let decodeWidth = info.width;
   let decodeHeight = info.height;
+  let headerReady = false;
+  let started = false;
 
   const refresh = () => {
     const resizeBytes =
@@ -386,9 +410,9 @@ async function* runJpegTransform(
   };
 
   try {
-    for await (const chunk of source.open()) {
+    for await (const { chunk, isFinal } of iterateInputChunks(source)) {
       stats.addBytesIn(chunk.byteLength);
-      decoder.pushInput(chunk, false);
+      decoder.pushInput(chunk, isFinal);
       refresh();
 
       if (!headerReady) {
@@ -449,7 +473,6 @@ async function* runJpegTransform(
     }
 
     stats.note(`jpeg-decoded=${decodeWidth}x${decodeHeight}`);
-    decoder.pushInput(new Uint8Array(0), true);
     refresh();
 
     if (!headerReady) {
