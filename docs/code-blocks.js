@@ -5,16 +5,139 @@ export const codeBlocks = {
 request.body -> inspect() -> decode -> resize -> encodeJpeg -> Response
 `,
   },
-  install: {
-    lang: 'shell',
-    code: `
-pnpm add @standardagents/sip
-`,
-  },
-  workerStream: {
+
+  // --- API signatures ---
+
+  readySig: {
     lang: 'typescript',
     code: `
-import { ready, transform, toResponse } from '@standardagents/sip'
+import { ready } from '@standardagents/sip'
+
+// Auto-detect WASM loader (uses globalThis.__SIP_WASM_LOADER__)
+await ready()
+
+// Or pass a pre-compiled WebAssembly.Module
+await ready({ wasm: compiledModule })
+
+// Or pass raw WASM bytes
+await ready({ wasm: wasmArrayBuffer })
+`,
+  },
+  inspectSig: {
+    lang: 'typescript',
+    code: `
+import { inspect } from '@standardagents/sip'
+
+// Accepts any ByteInput: Request, Response, ReadableStream,
+// ArrayBuffer, Uint8Array, Blob, or AsyncIterable<Uint8Array>
+const { info, source } = await inspect(request)
+
+info.format    // 'jpeg' | 'png' | 'webp' | 'avif'
+info.width     // pixel width
+info.height    // pixel height
+info.hasAlpha  // boolean
+`,
+  },
+  transformSig: {
+    lang: 'typescript',
+    code: `
+import { transform } from '@standardagents/sip'
+
+// One-shot: decode → resize → encode as JPEG
+const image = transform(input, {
+  width: 2048,   // max output width (aspect ratio preserved)
+  height: 2048,  // max output height
+  quality: 82,   // JPEG quality 1–100
+})
+
+// image is an EncodedImage (AsyncIterable<Uint8Array>)
+// with .info and .stats promises
+`,
+  },
+  decodeSig: {
+    lang: 'typescript',
+    code: `
+import { decode } from '@standardagents/sip'
+
+const pixels = decode(input)  // PixelStream (AsyncIterable<Scanline>)
+
+const info = await pixels.info
+// { width, height, originalFormat }
+
+for await (const scanline of pixels) {
+  scanline.data   // Uint8Array — RGB row (width * 3 bytes)
+  scanline.width  // pixel width
+  scanline.y      // row index
+}
+`,
+  },
+  resizeSig: {
+    lang: 'typescript',
+    code: `
+import { decode, resize } from '@standardagents/sip'
+
+const pixels = decode(input)
+const resized = resize(pixels, { width: 800, height: 800 })
+
+// resized is a new PixelStream with updated dimensions
+const info = await resized.info
+// { width: 800, height: 600, originalFormat: 'jpeg' }
+`,
+  },
+  encodeJpegSig: {
+    lang: 'typescript',
+    code: `
+import { decode, encodeJpeg, resize } from '@standardagents/sip'
+
+const pixels = decode(input)
+const resized = resize(pixels, { width: 1024, height: 1024 })
+const image = encodeJpeg(resized, { quality: 78 })
+
+// image is an EncodedImage (AsyncIterable<Uint8Array>)
+`,
+  },
+  collectSig: {
+    lang: 'typescript',
+    code: `
+import { collect, transform } from '@standardagents/sip'
+
+const image = transform(input, { width: 512, height: 512 })
+const { data, info, stats } = await collect(image)
+
+data   // ArrayBuffer — complete JPEG
+info   // { width, height, mimeType, originalFormat }
+stats  // { peakPipelineBytes, peakCodecBytes, bytesIn, bytesOut, ... }
+`,
+  },
+  toResponseSig: {
+    lang: 'typescript',
+    code: `
+import { toResponse, transform } from '@standardagents/sip'
+
+const image = transform(request, { width: 1600, height: 1600 })
+
+// Streams JPEG chunks directly into the Response body
+return toResponse(image, {
+  headers: { 'Cache-Control': 'public, max-age=31536000' },
+})
+`,
+  },
+  toReadableStreamSig: {
+    lang: 'typescript',
+    code: `
+import { toReadableStream, transform } from '@standardagents/sip'
+
+const image = transform(input, { width: 1024 })
+const stream = toReadableStream(image) // ReadableStream<Uint8Array>
+`,
+  },
+
+  // --- Examples ---
+
+  exampleWorker: {
+    lang: 'typescript',
+    code: `
+import { ready, toResponse, transform } from '@standardagents/sip'
 import createSipModule from '@standardagents/sip/dist/sip.js'
 import sipWasm from '@standardagents/sip/dist/sip.wasm'
 
@@ -35,26 +158,18 @@ export default {
     boot ??= ready()
     await boot
 
-    const url = new URL(request.url)
-    const width = Number(url.searchParams.get('width')) || 1024
-    const height = Number(url.searchParams.get('height')) || 1024
-
-    const image = transform(request.body ?? request, {
-      width,
-      height,
+    const image = transform(request, {
+      width: 1600,
+      height: 1600,
       quality: 82,
     })
 
-    return toResponse(image, {
-      headers: {
-        'Cache-Control': 'no-store',
-      },
-    })
+    return toResponse(image)
   },
 }
 `,
   },
-  inspect: {
+  exampleValidate: {
     lang: 'typescript',
     code: `
 import { inspect, toResponse, transform } from '@standardagents/sip'
@@ -62,57 +177,30 @@ import { inspect, toResponse, transform } from '@standardagents/sip'
 const { info, source } = await inspect(request)
 
 if (info.width > 12_000 || info.height > 12_000) {
-  return Response.json({ error: 'Image is too large' }, { status: 413 })
+  return Response.json({ error: 'Image too large' }, { status: 413 })
 }
 
-if (!['jpeg', 'png', 'webp', 'avif'].includes(info.format)) {
-  return Response.json({ error: 'Unsupported format' }, { status: 415 })
-}
-
-return toResponse(transform(source, { width: 1600, height: 1600 }))
+return toResponse(transform(source, { width: 2048, height: 2048 }))
 `,
   },
-  manual: {
+  exampleManual: {
     lang: 'typescript',
     code: `
-import { decode, encodeJpeg, inspect, resize, toResponse } from '@standardagents/sip'
+import { collect, decode, encodeJpeg, resize } from '@standardagents/sip'
 
-const { source } = await inspect(request)
-const pixels = decode(source)
+const pixels = decode(request)
 const resized = resize(pixels, { width: 960, height: 960 })
 const jpeg = encodeJpeg(resized, { quality: 78 })
+const { data, info, stats } = await collect(jpeg)
 
-return toResponse(jpeg)
-`,
-  },
-  collect: {
-    lang: 'typescript',
-    code: `
-import { collect, transform } from '@standardagents/sip'
-
-const image = transform(bytes, { width: 512, height: 512, quality: 80 })
-const { data, info, stats } = await collect(image)
-
-console.log(info.width, info.height, info.originalFormat)
-console.log(stats.peakPipelineBytes, stats.peakCodecBytes)
-`,
-  },
-  memory: {
-    lang: 'typescript',
-    code: `
-const image = transform(request.body ?? request, { width: 1200, height: 1200 })
-const { stats } = await collect(image)
-
-console.log({
-  // Total memory SIP itself used during the transform.
-  peakSipMemoryBytes: stats.peakPipelineBytes,
-  // Decoder + encoder portion of that total.
-  peakCodecMemoryBytes: stats.peakCodecBytes,
-  peakBufferedInputBytes: stats.peakBufferedInputBytes,
-  peakBufferedOutputBytes: stats.peakBufferedOutputBytes,
+await env.BUCKET.put('image.jpg', data, {
+  httpMetadata: { contentType: info.mimeType },
 })
 `,
   },
+
+  // --- Other sections ---
+
   loader: {
     lang: 'typescript',
     code: `
@@ -143,7 +231,6 @@ source ./emsdk_env.sh
 pnpm build:wasm
 pnpm build:code
 pnpm test:unit
-pnpm test:workers
 `,
   },
 }

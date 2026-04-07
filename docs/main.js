@@ -58,11 +58,16 @@ const tocItems = [
   { id: 'api-ready', label: 'ready()', indent: true },
   { id: 'api-inspect', label: 'inspect()', indent: true },
   { id: 'api-transform', label: 'transform()', indent: true },
-  { id: 'api-output', label: 'output helpers', indent: true },
+  { id: 'api-decode', label: 'decode()', indent: true },
+  { id: 'api-resize', label: 'resize()', indent: true },
+  { id: 'api-encode', label: 'encodeJpeg()', indent: true },
+  { id: 'api-collect', label: 'collect()', indent: true },
+  { id: 'api-toresponse', label: 'toResponse()', indent: true },
+  { id: 'api-tostream', label: 'toReadableStream()', indent: true },
+  { id: 'api-types', label: 'Types', indent: true },
   { id: 'formats', label: 'Format Support' },
   { id: 'wasm', label: 'WASM Build' },
   { id: 'examples', label: 'Examples' },
-  { id: 'testing', label: 'Testing' },
   { id: 'caveats', label: 'Caveats' },
 ]
 
@@ -394,76 +399,171 @@ const App = component(() => html`
           <section id="api">
             <h2>API</h2>
             <p>
-              The public surface is now small and ordered. The important distinction
-              is between the stream-friendly path and the explicit buffering path.
+              Every function is a named export from <code>@standardagents/sip</code>.
+              The high-level path is <code>transform</code> + <code>toResponse</code>.
+              The lower-level primitives let you build custom pipelines.
             </p>
 
             <article id="api-ready" class="api-entry">
               <h3>ready(options?)</h3>
               <p>
-                Load the SIP WASM module before the first hot request. In Workers,
-                memoize it once per isolate and reuse it across requests.
+                Load the WASM module. Call once per isolate and await before the first
+                request. Accepts an optional <code>wasm</code> property with a
+                pre-compiled <code>WebAssembly.Module</code> or raw
+                <code>ArrayBuffer</code>. Without it, uses the global
+                <code>__SIP_WASM_LOADER__</code>.
               </p>
-              <div class="shiki-block" data-code="loader"></div>
+              <div class="shiki-block" data-code="readySig"></div>
             </article>
 
             <article id="api-inspect" class="api-entry">
               <h3>inspect(input)</h3>
               <p>
-                Read just enough header bytes to determine format, dimensions,
-                and alpha. For streamed inputs it returns a reusable
-                <code>source</code> so you can inspect before you transform.
+                Read header bytes to determine format, dimensions, and alpha without
+                decoding the full image. Returns an <code>InspectResult</code> with
+                <code>info</code> and a reusable <code>source</code> that can be
+                passed to <code>transform</code> or <code>decode</code>.
               </p>
-              <div class="shiki-block" data-code="inspect"></div>
+              <div class="shiki-block" data-code="inspectSig"></div>
               <p>
-                Accepts <code>Request</code>, <code>Response</code>,
-                <code>ReadableStream</code>, <code>AsyncIterable</code>,
-                <code>ArrayBuffer</code>, <code>Uint8Array</code>, and
-                <code>Blob</code>.
+                Throws if the format is unrecognized. For streamed inputs the source
+                buffers only the header bytes internally — the rest streams on
+                <code>open()</code>.
               </p>
             </article>
 
             <article id="api-transform" class="api-entry">
-              <h3>transform(input, options)</h3>
+              <h3>transform(input, options?)</h3>
               <p>
-                Convenience path for decode, resize, and JPEG encode. This is the
-                API most Worker code should start with.
+                One-shot decode, resize, and JPEG encode. Returns an
+                <code>EncodedImage</code> — an <code>AsyncIterable&lt;Uint8Array&gt;</code>
+                with <code>.info</code> and <code>.stats</code> promises. Nothing
+                runs until you consume the iterable.
               </p>
-              <div class="shiki-block" data-code="workerStream"></div>
-              <h4>Options</h4>
+              <div class="shiki-block" data-code="transformSig"></div>
+              <h4>TransformOptions</h4>
               <div class="option-list">
                 <div class="option">
-                  <code>width</code>
-                  <span>Fit the output within this width while preserving aspect ratio. sip never upscales.</span>
+                  <code>width?</code>
+                  <span>Max output width. Aspect ratio preserved. Never upscales.</span>
                 </div>
                 <div class="option">
-                  <code>height</code>
-                  <span>Fit the output within this height while preserving aspect ratio. sip never upscales.</span>
+                  <code>height?</code>
+                  <span>Max output height. Aspect ratio preserved. Never upscales.</span>
                 </div>
                 <div class="option">
-                  <code>quality</code>
-                  <span>JPEG quality from 1 to 100. Defaults to 85.</span>
+                  <code>quality?</code>
+                  <span>JPEG quality 1–100. Defaults to 85.</span>
                 </div>
               </div>
             </article>
 
-            <article class="api-entry">
-              <h3>decode() / resize() / encodeJpeg()</h3>
+            <article id="api-decode" class="api-entry">
+              <h3>decode(input)</h3>
               <p>
-                When you want the call site to mirror the actual pipeline, use the
-                lower-level building blocks directly.
+                Decode any supported format into a <code>PixelStream</code> — an
+                <code>AsyncIterable&lt;Scanline&gt;</code> that yields one RGB row
+                at a time. Each scanline has <code>data</code> (Uint8Array, width * 3),
+                <code>width</code>, and <code>y</code>.
               </p>
-              <div class="shiki-block" data-code="manual"></div>
+              <div class="shiki-block" data-code="decodeSig"></div>
             </article>
 
-            <article id="api-output" class="api-entry">
-              <h3>toReadableStream() / toResponse() / collect()</h3>
+            <article id="api-resize" class="api-entry">
+              <h3>resize(stream, options)</h3>
               <p>
-                <code>toResponse()</code> is the Worker-first output helper.
-                <code>collect()</code> is the explicit buffered path when you
-                actually need the final JPEG bytes in memory.
+                Resize a <code>PixelStream</code> using scanline-based bilinear
+                interpolation. Only keeps two rows in memory at a time. Returns a
+                new <code>PixelStream</code> with updated dimensions.
               </p>
-              <div class="shiki-block" data-code="collect"></div>
+              <div class="shiki-block" data-code="resizeSig"></div>
+            </article>
+
+            <article id="api-encode" class="api-entry">
+              <h3>encodeJpeg(stream, options?)</h3>
+              <p>
+                Encode a <code>PixelStream</code> to JPEG, yielding output chunks as
+                they become available. Returns an <code>EncodedImage</code>.
+              </p>
+              <div class="shiki-block" data-code="encodeJpegSig"></div>
+            </article>
+
+            <article id="api-collect" class="api-entry">
+              <h3>collect(image)</h3>
+              <p>
+                Consume an <code>EncodedImage</code> and return the complete JPEG as
+                an <code>ArrayBuffer</code> along with <code>info</code> and
+                <code>stats</code>. This buffers the full output — use
+                <code>toResponse</code> when streaming is preferred.
+              </p>
+              <div class="shiki-block" data-code="collectSig"></div>
+            </article>
+
+            <article id="api-toresponse" class="api-entry">
+              <h3>toResponse(image, init?)</h3>
+              <p>
+                Stream an <code>EncodedImage</code> directly into a
+                <code>Response</code> body. Sets <code>Content-Type: image/jpeg</code>
+                automatically. Pass additional headers or status via the optional
+                <code>ResponseInit</code>.
+              </p>
+              <div class="shiki-block" data-code="toResponseSig"></div>
+            </article>
+
+            <article id="api-tostream" class="api-entry">
+              <h3>toReadableStream(image)</h3>
+              <p>
+                Convert an <code>EncodedImage</code> to a standard
+                <code>ReadableStream&lt;Uint8Array&gt;</code> for use with any
+                streaming API.
+              </p>
+              <div class="shiki-block" data-code="toReadableStreamSig"></div>
+            </article>
+
+            <article id="api-types" class="api-entry">
+              <h3>Types</h3>
+              <div class="option-list">
+                <div class="option">
+                  <code>ByteInput</code>
+                  <span>Union of all accepted input types: ArrayBuffer, Uint8Array, Blob, Request, Response, ReadableStream, or AsyncIterable.</span>
+                </div>
+                <div class="option">
+                  <code>ImageInfo</code>
+                  <span>{ format, width, height, hasAlpha } — returned by inspect().</span>
+                </div>
+                <div class="option">
+                  <code>InputSource</code>
+                  <span>Reusable handle returned by inspect(). Pass to transform() or decode() to avoid re-reading headers.</span>
+                </div>
+                <div class="option">
+                  <code>InspectResult</code>
+                  <span>{ info: ImageInfo, source: InputSource }</span>
+                </div>
+                <div class="option">
+                  <code>TransformOptions</code>
+                  <span>{ width?, height?, quality? }</span>
+                </div>
+                <div class="option">
+                  <code>EncodedImage</code>
+                  <span>AsyncIterable&lt;Uint8Array&gt; with .info and .stats promises. Returned by transform() and encodeJpeg().</span>
+                </div>
+                <div class="option">
+                  <code>EncodedImageInfo</code>
+                  <span>{ width, height, mimeType: 'image/jpeg', originalFormat }</span>
+                </div>
+                <div class="option">
+                  <code>PixelStream</code>
+                  <span>AsyncIterable&lt;Scanline&gt; with .info promise. Returned by decode() and resize().</span>
+                </div>
+                <div class="option">
+                  <code>Scanline</code>
+                  <span>{ data: Uint8Array, width: number, y: number } — one RGB row (width * 3 bytes).</span>
+                </div>
+                <div class="option">
+                  <code>TransformStats</code>
+                  <span>{ peakPipelineBytes, peakCodecBytes, peakBufferedInputBytes, peakBufferedOutputBytes, bytesIn, bytesOut, notes }</span>
+                </div>
+              </div>
             </article>
           </section>
 
@@ -526,38 +626,18 @@ const App = component(() => html`
 
           <section id="examples">
             <h2>Examples</h2>
-            <p>
-              These examples keep the Worker path explicit: stream in, transform,
-              and only buffer when you really mean to.
-            </p>
 
-            <h3>Worker fetch handler with raw request bodies</h3>
-            <div class="shiki-block" data-code="workerStream"></div>
+            <h3>Worker fetch handler</h3>
+            <p>Stream a raw request body through sip and return the JPEG directly:</p>
+            <div class="shiki-block" data-code="exampleWorker"></div>
 
-            <h3>Inspect before routing or validation</h3>
-            <div class="shiki-block" data-code="inspect"></div>
+            <h3>Validate before processing</h3>
+            <p>Use <code>inspect()</code> to check dimensions before committing to a transform:</p>
+            <div class="shiki-block" data-code="exampleValidate"></div>
 
-            <h3>Manual decode → resize → encode</h3>
-            <div class="shiki-block" data-code="manual"></div>
-
-            <h3>Collect full bytes when a test or API client needs them</h3>
-            <div class="shiki-block" data-code="collect"></div>
-          </section>
-
-          <section id="testing">
-            <h2>Testing</h2>
-            <p>
-              The repo now tests JPEG, PNG, WebP, and AVIF with committed sample
-              fixtures. Worker integration runs in Miniflare/workerd, and the
-              Node-side memory harness checks for obvious drift across repeated
-              large JPEG transforms.
-            </p>
-            <p>
-              The docs demo shows SIP-reported processing peaks. The automated
-              suite also checks behavior from outside the worker process so there
-              is a second memory signal besides the in-library counters.
-            </p>
-            <div class="shiki-block" data-code="memory"></div>
+            <h3>Manual pipeline with R2</h3>
+            <p>Use the lower-level primitives when you need control over each step:</p>
+            <div class="shiki-block" data-code="exampleManual"></div>
           </section>
 
           <section id="caveats">
