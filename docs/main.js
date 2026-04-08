@@ -523,14 +523,6 @@ const App = component(() => html`
               A 25 megapixel JPEG becomes ~100 MB of buffered pixels in memory.
             </p>
             <p>
-              Why sip? Cloudflare already has built-in image processing, but it
-              can still be useful to run transforms directly inside your own
-              Worker or Durable Object. That can mean fewer bindings to manage,
-              better isolation inside the code that already owns the request,
-              and easier distribution when you want image processing packaged as
-              part of your application instead of a separate service boundary.
-            </p>
-            <p>
               sip avoids that by processing images one row at a time. It never
               holds the full decoded image in memory. For JPEG inputs it can even
               decode at a reduced resolution using DCT scaling, so a 6800px-wide
@@ -540,6 +532,15 @@ const App = component(() => html`
               The output is always JPEG. You give sip an image (JPEG, PNG, WebP,
               or AVIF), tell it the max dimensions and quality you want, and it
               gives you back a resized JPEG.
+            </p>
+            <h3>Why sip?</h3>
+            <p>
+              Cloudflare already has built-in image processing, but it can still
+              be useful to run transforms directly inside your own Worker or
+              Durable Object. That can mean fewer bindings to manage, better
+              isolation inside the code that already owns the request, and easier
+              distribution when you want image processing packaged as part of
+              your application instead of a separate service boundary.
             </p>
           </section>
 
