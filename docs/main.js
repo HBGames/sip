@@ -2,7 +2,7 @@ import { component, html, reactive } from '@arrow-js/core'
 import { render } from '@arrow-js/framework'
 import highlighted from 'virtual:highlighted-code'
 import sampleImageUrl from './sample.png'
-import sipLogoUrl from './sip.png'
+const sipLogoUrl = '/sip-logo.svg'
 import './styles.css'
 
 const state = reactive({
@@ -230,7 +230,7 @@ const App = component(() => html`
   <main class="page">
     <nav class="nav">
       <a href="#" class="nav__brand">
-        <img src="${sipLogoUrl}" alt="sip" />
+        <img src="/favicon.svg" alt="sip" class="nav__icon" />
         <span>sip</span>
       </a>
       <a

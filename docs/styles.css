@@ -61,8 +61,8 @@ code, pre { font-family: var(--mono); }
   letter-spacing: -0.02em;
 }
 
-.nav__brand img {
-  height: 24px;
+.nav__icon {
+  height: 20px;
   width: auto;
   filter: invert(1);
 }
