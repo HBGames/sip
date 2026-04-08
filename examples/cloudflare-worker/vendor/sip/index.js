@@ -656,6 +656,10 @@ function calculateTargetDimensions(srcWidth, srcHeight, maxWidth, maxHeight) {
 var wasmModule = null;
 var wasmPromise = null;
 var precompiledWasmModule = null;
+function isCloudflareWorker2() {
+  const cacheStorage = globalThis.caches;
+  return typeof cacheStorage !== "undefined" && typeof cacheStorage.default !== "undefined";
+}
 async function initWithWasmModule(compiledModule) {
   if (wasmModule) {
     return;
@@ -694,13 +698,6 @@ async function doLoadWasm() {
   }
   try {
     const createSipModule = (await import('./sip.js')).default;
-    const isNode2 = typeof process !== "undefined" && process.versions != null && process.versions.node != null;
-    if (isNode2) {
-      const { readFile } = await import('fs/promises');
-      const wasmBinary = await readFile(new URL("./sip.wasm", import.meta.url));
-      const module2 = await createSipModule({ wasmBinary });
-      return module2;
-    }
     if (precompiledWasmModule) {
       const module2 = await new Promise((resolve, reject) => {
         let resolvedModule = null;
@@ -725,6 +722,13 @@ async function doLoadWasm() {
           }
         }).catch(reject);
       });
+      return module2;
+    }
+    const isNode2 = !isCloudflareWorker2() && typeof process !== "undefined" && process.versions != null && process.versions.node != null;
+    if (isNode2) {
+      const { readFile } = await import('fs/promises');
+      const wasmBinary = await readFile(new URL("./sip.wasm", import.meta.url));
+      const module2 = await createSipModule({ wasmBinary });
       return module2;
     }
     const module = await createSipModule();

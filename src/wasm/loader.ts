@@ -14,6 +14,11 @@ let wasmModule: SipWasmModule | null = null;
 let wasmPromise: Promise<SipWasmModule> | null = null;
 let precompiledWasmModule: WebAssembly.Module | null = null;
 
+function isCloudflareWorker(): boolean {
+  const cacheStorage = (globalThis as { caches?: CacheStorage & { default?: Cache } }).caches;
+  return typeof cacheStorage !== 'undefined' && typeof cacheStorage.default !== 'undefined';
+}
+
 /**
  * Check if WASM module is available
  */
@@ -101,19 +106,8 @@ async function doLoadWasm(): Promise<SipWasmModule> {
     // @ts-ignore - Dynamic import of built WASM module
     const createSipModule = (await import('./sip.js')).default;
 
-    const isNode =
-      typeof process !== 'undefined' &&
-      process.versions != null &&
-      process.versions.node != null;
-
-    if (isNode) {
-      const { readFile } = await import('fs/promises');
-      const wasmBinary = await readFile(new URL('./sip.wasm', import.meta.url));
-      const module = await createSipModule({ wasmBinary });
-      return module as SipWasmModule;
-    }
-
-    // If we have a pre-compiled module, use instantiateWasm callback
+    // Prefer an explicitly provided precompiled module in Workers/bundlers
+    // before probing any environment-specific filesystem paths.
     if (precompiledWasmModule) {
       const module = await new Promise<SipWasmModule>((resolve, reject) => {
         let resolvedModule: SipWasmModule | null = null;
@@ -123,7 +117,6 @@ async function doLoadWasm(): Promise<SipWasmModule> {
             imports: WebAssembly.Imports,
             receiveInstance: (instance: WebAssembly.Instance) => void
           ) => {
-            // Use WebAssembly.instantiate with the pre-compiled module
             WebAssembly.instantiate(precompiledWasmModule!, imports)
               .then((instance) => {
                 receiveInstance(instance);
@@ -132,26 +125,35 @@ async function doLoadWasm(): Promise<SipWasmModule> {
                 reject(err);
               });
 
-            // Return empty exports - Emscripten will get them from receiveInstance
             return {};
           },
           onRuntimeInitialized: () => {
-            // Runtime is now fully initialized, HEAPU8 should be available
             if (resolvedModule && resolvedModule.HEAPU8) {
               resolve(resolvedModule);
             }
           },
         }).then((mod: SipWasmModule) => {
           resolvedModule = mod;
-          // If HEAPU8 is already available, resolve immediately
           if (mod.HEAPU8) {
             resolve(mod);
           }
-          // Otherwise, wait for onRuntimeInitialized
         }).catch(reject);
       });
 
       return module;
+    }
+
+    const isNode =
+      !isCloudflareWorker() &&
+      typeof process !== 'undefined' &&
+      process.versions != null &&
+      process.versions.node != null;
+
+    if (isNode) {
+      const { readFile } = await import('fs/promises');
+      const wasmBinary = await readFile(new URL('./sip.wasm', import.meta.url));
+      const module = await createSipModule({ wasmBinary });
+      return module as SipWasmModule;
     }
 
     // Standard loading (browser environment)
