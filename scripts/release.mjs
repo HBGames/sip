@@ -174,13 +174,16 @@ async function main() {
   ensureTagAvailable(tagName)
 
   // Verification
-  const runVerify = await p.confirm({
-    message: 'Run full verification before release?',
-    initialValue: true,
-  })
-  if (p.isCancel(runVerify)) {
-    p.cancel('Release cancelled.')
-    process.exit(0)
+  let runVerify = yes
+  if (!yes) {
+    runVerify = await p.confirm({
+      message: 'Run full verification before release?',
+      initialValue: true,
+    })
+    if (p.isCancel(runVerify)) {
+      p.cancel('Release cancelled.')
+      process.exit(0)
+    }
   }
 
   if (runVerify) {
