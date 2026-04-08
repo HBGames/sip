@@ -9,6 +9,8 @@ const state = reactive({
   installTool: 'pnpm',
   installCopied: false,
   stars: '',
+  activeSection: 'demo',
+  activeTopSection: 'demo',
   demoMaxWidth: '1024',
   demoMaxHeight: '1024',
   demoQuality: '82',
@@ -85,6 +87,86 @@ const tocItems = [
   { id: 'example', label: 'Example' },
   { id: 'caveats', label: 'Caveats' },
 ]
+
+const topTocItems = tocItems.filter((item) => !item.indent)
+
+function getTopTocId(id) {
+  const idx = tocItems.findIndex((i) => i.id === id)
+  if (idx < 0) return id
+  if (!tocItems[idx].indent) return id
+  for (let i = idx - 1; i >= 0; i--) {
+    if (!tocItems[i].indent) return tocItems[i].id
+  }
+  return id
+}
+
+function scrollMobileTocIntoView(id) {
+  requestAnimationFrame(() => {
+    const container = document.querySelector('.mobile-toc__inner')
+    const link = container?.querySelector(`[data-mobile-toc-id="${id}"]`)
+    if (!container || !link) return
+    const containerRect = container.getBoundingClientRect()
+    const linkRect = link.getBoundingClientRect()
+    const delta = linkRect.left - containerRect.left - (containerRect.width - linkRect.width) / 2
+    container.scrollBy({ left: delta, behavior: 'smooth' })
+  })
+}
+
+function initScrollSpy() {
+  const sections = tocItems
+    .map((item) => ({ id: item.id, el: document.getElementById(item.id) }))
+    .filter((s) => s.el)
+
+  if (!sections.length) return
+
+  const applyActive = (id) => {
+    if (!id || state.activeSection === id) return
+    state.activeSection = id
+    const topId = getTopTocId(id)
+    if (state.activeTopSection !== topId) {
+      state.activeTopSection = topId
+      scrollMobileTocIntoView(topId)
+    }
+  }
+
+  const update = () => {
+    const doc = document.documentElement
+    const scrollY = window.scrollY || doc.scrollTop
+    const viewportW = window.innerWidth || doc.clientWidth
+    const viewportH = window.innerHeight || doc.clientHeight
+    const activationLine = viewportW <= 860 ? 180 : 110
+
+    let activeId = sections[0].id
+    for (const section of sections) {
+      const top = section.el.getBoundingClientRect().top
+      if (top - activationLine <= 0) {
+        activeId = section.id
+      } else {
+        break
+      }
+    }
+
+    const atBottom = scrollY + viewportH >= doc.scrollHeight - 4
+    if (atBottom) {
+      activeId = sections[sections.length - 1].id
+    }
+
+    applyActive(activeId)
+  }
+
+  let frame = 0
+  const schedule = () => {
+    if (frame) return
+    frame = requestAnimationFrame(() => {
+      frame = 0
+      update()
+    })
+  }
+
+  update()
+  window.addEventListener('scroll', schedule, { passive: true })
+  window.addEventListener('resize', schedule, { passive: true })
+}
 
 function injectHighlightedCode() {
   for (const [key, markup] of Object.entries(highlighted)) {
@@ -269,7 +351,23 @@ const StatCard = component((props) => html`
 const TocLink = component((props) => html`
   <a
     href="${() => '#' + props.id}"
-    class="${() => props.indent ? 'toc__link toc__link--indent' : 'toc__link'}"
+    class="${() => {
+      let cls = 'toc__link'
+      if (props.indent) cls += ' toc__link--indent'
+      if (state.activeSection === props.id) cls += ' toc__link--active'
+      return cls
+    }}"
+  >${() => props.label}</a>
+`)
+
+const MobileTocLink = component((props) => html`
+  <a
+    href="${() => '#' + props.id}"
+    data-mobile-toc-id="${() => props.id}"
+    class="${() =>
+      state.activeTopSection === props.id
+        ? 'mobile-toc__link mobile-toc__link--active'
+        : 'mobile-toc__link'}"
   >${() => props.label}</a>
 `)
 
@@ -292,6 +390,12 @@ const App = component(() => html`
         </span>
         <span>GitHub</span>
       </a>
+    </nav>
+
+    <nav class="mobile-toc" aria-label="Page sections">
+      <div class="mobile-toc__inner">
+        ${topTocItems.map((item) => MobileTocLink(item))}
+      </div>
     </nav>
 
     <div class="shell">
@@ -743,4 +847,5 @@ render(root, App())
 
 requestAnimationFrame(() => {
   injectHighlightedCode()
+  initScrollSpy()
 })

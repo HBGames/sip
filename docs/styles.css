@@ -19,7 +19,14 @@
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
-html { scroll-behavior: smooth; }
+html {
+  scroll-behavior: smooth;
+  scroll-padding-top: 80px;
+}
+
+@media (max-width: 860px) {
+  html { scroll-padding-top: 124px; }
+}
 
 body {
   font-family: var(--sans);
@@ -319,6 +326,72 @@ code, pre { font-family: var(--mono); }
 .toc__link--indent {
   padding-left: 1.5rem;
   font-size: 0.82rem;
+}
+
+.toc__link--active {
+  color: var(--accent);
+  border-left-color: var(--accent);
+}
+
+.toc__link--active:hover {
+  color: var(--accent);
+}
+
+/* --- Mobile horizontal TOC --- */
+
+.mobile-toc {
+  display: none;
+  position: sticky;
+  top: 56px;
+  z-index: 90;
+  background: rgba(0, 0, 0, 0.85);
+  backdrop-filter: blur(20px) saturate(1.8);
+  -webkit-backdrop-filter: blur(20px) saturate(1.8);
+  border-bottom: 1px solid var(--border);
+}
+
+.mobile-toc__inner {
+  display: flex;
+  gap: 0.35rem;
+  padding: 0.55rem 1rem;
+  overflow-x: auto;
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  scroll-behavior: smooth;
+  -webkit-overflow-scrolling: touch;
+}
+
+.mobile-toc__inner::-webkit-scrollbar {
+  display: none;
+}
+
+.mobile-toc__link {
+  flex-shrink: 0;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.8rem;
+  font-weight: 500;
+  color: var(--text-muted);
+  white-space: nowrap;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  text-decoration: none;
+  transition: color 0.15s, background 0.15s, border-color 0.15s;
+}
+
+.mobile-toc__link:hover {
+  color: var(--text-secondary);
+  text-decoration: none;
+}
+
+.mobile-toc__link--active {
+  color: var(--accent);
+  background: var(--accent-dim);
+  border-color: var(--accent-border);
+}
+
+.mobile-toc__link--active:hover {
+  color: var(--accent);
 }
 
 /* --- Content --- */
@@ -891,6 +964,8 @@ code, pre { font-family: var(--mono); }
 
 @media (max-width: 860px) {
   .shell { width: calc(100vw - 2rem); }
+  .nav { padding: 0 1rem; }
+  .mobile-toc__inner { padding: 0.55rem 1rem; }
   .hero { padding: 3rem 0 2.5rem; }
   .hero__title { font-size: 2.5rem; }
 
@@ -907,6 +982,10 @@ code, pre { font-family: var(--mono); }
 
   .toc {
     display: none;
+  }
+
+  .mobile-toc {
+    display: block;
   }
 
   .content {
