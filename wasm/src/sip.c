@@ -65,6 +65,13 @@ struct SipDecoder {
     JSAMPARRAY raw_image[SIP_MAX_JPEG_COMPONENTS];
     SipChunk *input_head;
     SipChunk *input_tail;
+    SipChunk *source_chunk;
+    SipChunk *saved_restart_chunk;
+    uint32_t saved_restart_offset;
+    uint32_t saved_restart_bytes;
+    SipChunk *last_handed_chunk;
+    uint32_t last_handed_offset;
+    uint32_t last_handed_bytes;
     uint8_t *input_buffer;
     uint32_t input_capacity;
     uint8_t *buffered_source_data;
@@ -299,13 +306,20 @@ static void sip_decoder_render_raw_scanline(SipDecoder *dec, uint32_t local_y) {
 // JPEG Decoder Streaming Source Manager
 // ============================================================================
 
-#define SIP_DECODER_INPUT_CAPACITY 65536
+#define SIP_DECODER_INPUT_CAPACITY 262144
 
 static void sip_decoder_use_stream_source(SipDecoder *dec) {
     dec->cinfo.src = (struct jpeg_source_mgr *)&dec->source_mgr;
     dec->source_mgr.pub.bytes_in_buffer = 0;
     dec->source_mgr.pub.next_input_byte = NULL;
     dec->using_buffered_source = 0;
+    dec->source_chunk = NULL;
+    dec->saved_restart_chunk = NULL;
+    dec->saved_restart_offset = 0;
+    dec->saved_restart_bytes = 0;
+    dec->last_handed_chunk = NULL;
+    dec->last_handed_offset = 0;
+    dec->last_handed_bytes = 0;
 }
 
 static int sip_decoder_queue_input(SipDecoder *dec, const uint8_t *data, uint32_t size) {
@@ -383,58 +397,88 @@ static int sip_decoder_ensure_input_capacity(SipDecoder *dec, size_t required_si
     return 0;
 }
 
-static uint32_t sip_decoder_pull_queued_bytes(SipDecoder *dec, uint8_t *dest, uint32_t capacity) {
-    uint32_t written = 0;
-
-    while (dec->input_head && written < capacity) {
-        SipChunk *chunk = dec->input_head;
-        uint32_t remaining = chunk->size - chunk->offset;
-        uint32_t to_copy = remaining;
-        if (to_copy > capacity - written) {
-            to_copy = capacity - written;
-        }
-
-        memcpy(dest + written, chunk->data + chunk->offset, to_copy);
-        written += to_copy;
-        chunk->offset += to_copy;
-        dec->queued_input_bytes -= to_copy;
-
-        if (chunk->offset >= chunk->size) {
-            dec->input_head = chunk->next;
-            if (!dec->input_head) {
-                dec->input_tail = NULL;
-            }
-            free(chunk->data);
-            free(chunk);
+static SipChunk* sip_decoder_find_chunk_for_pointer(SipDecoder *dec, const JOCTET *ptr) {
+    for (SipChunk *chunk = dec->input_head; chunk; chunk = chunk->next) {
+        if (ptr >= chunk->data && ptr <= chunk->data + chunk->size) {
+            return chunk;
         }
     }
 
-    return written;
+    return NULL;
 }
 
-static uint32_t sip_decoder_compact_input_buffer(SipDecoder *dec) {
+static void sip_decoder_set_stream_chunk(SipDecoder *dec, SipChunk *chunk, uint32_t offset) {
+    dec->source_chunk = chunk;
+    dec->source_mgr.pub.next_input_byte = chunk ? chunk->data + offset : NULL;
+    dec->source_mgr.pub.bytes_in_buffer = chunk ? (size_t)(chunk->size - offset) : 0;
+    dec->last_handed_chunk = chunk;
+    dec->last_handed_offset = offset;
+    dec->last_handed_bytes = chunk ? (uint32_t)(chunk->size - offset) : 0;
+}
+
+static int sip_decoder_stream_progressed(SipDecoder *dec) {
+    if (!dec->last_handed_chunk) {
+        return 1;
+    }
+
+    return dec->source_mgr.pub.next_input_byte != dec->last_handed_chunk->data + dec->last_handed_offset ||
+        dec->source_mgr.pub.bytes_in_buffer != dec->last_handed_bytes;
+}
+
+static void sip_decoder_save_restart_point(SipDecoder *dec) {
     const JOCTET *next = dec->source_mgr.pub.next_input_byte;
-    size_t bytes = dec->source_mgr.pub.bytes_in_buffer;
 
-    if (!next || next == dec->source_mgr.eoi_buffer || bytes == 0) {
-        dec->source_mgr.pub.next_input_byte = dec->input_buffer;
-        dec->source_mgr.pub.bytes_in_buffer = 0;
-        return 0;
+    if (!next || next == dec->source_mgr.eoi_buffer) {
+        dec->saved_restart_chunk = NULL;
+        dec->saved_restart_offset = 0;
+        dec->saved_restart_bytes = 0;
+        return;
     }
 
-    if (next != dec->input_buffer) {
-        memmove(dec->input_buffer, next, bytes);
+    SipChunk *chunk = sip_decoder_find_chunk_for_pointer(dec, next);
+    if (!chunk) {
+        dec->saved_restart_chunk = NULL;
+        dec->saved_restart_offset = 0;
+        dec->saved_restart_bytes = 0;
+        return;
     }
 
-    dec->source_mgr.pub.next_input_byte = dec->input_buffer;
-    dec->source_mgr.pub.bytes_in_buffer = bytes;
-    return (uint32_t)bytes;
+    dec->saved_restart_chunk = chunk;
+    dec->saved_restart_offset = (uint32_t)(next - chunk->data);
+    dec->saved_restart_bytes = (uint32_t)dec->source_mgr.pub.bytes_in_buffer;
+}
+
+static void sip_decoder_restore_restart_point(SipDecoder *dec) {
+    if (!dec->saved_restart_chunk) {
+        return;
+    }
+
+    dec->source_chunk = dec->saved_restart_chunk;
+    dec->source_mgr.pub.next_input_byte = dec->saved_restart_chunk->data + dec->saved_restart_offset;
+    dec->source_mgr.pub.bytes_in_buffer = dec->saved_restart_bytes;
+    dec->last_handed_chunk = dec->saved_restart_chunk;
+    dec->last_handed_offset = dec->saved_restart_offset;
+    dec->last_handed_bytes = dec->saved_restart_bytes;
+}
+
+static SipChunk* sip_decoder_next_source_chunk(SipDecoder *dec) {
+    if (!dec->source_chunk) {
+        return dec->input_head;
+    }
+
+    return dec->source_chunk->next;
 }
 
 static void sip_decoder_init_source(j_decompress_ptr cinfo) {
     SipDecoderSourceManager *src = (SipDecoderSourceManager *)cinfo->src;
-    if (!src->pub.next_input_byte && src->pub.bytes_in_buffer == 0) {
-        src->pub.next_input_byte = src->owner->input_buffer;
+    SipDecoder *dec = src->owner;
+
+    if (!src->pub.next_input_byte && src->pub.bytes_in_buffer == 0 && dec->input_head) {
+        SipChunk *chunk = sip_decoder_next_source_chunk(dec);
+        if (chunk) {
+            dec->queued_input_bytes -= chunk->size;
+            sip_decoder_set_stream_chunk(dec, chunk, 0);
+        }
     }
 }
 
@@ -460,25 +504,44 @@ static boolean sip_decoder_fill_input_buffer(j_decompress_ptr cinfo) {
             dec->pending_skip = 0;
         }
 
-        if (src->pub.bytes_in_buffer > 0) {
+        int progressed = sip_decoder_stream_progressed(dec);
+        if (progressed || !dec->saved_restart_chunk) {
+            sip_decoder_save_restart_point(dec);
+        }
+
+        SipChunk *next_chunk = sip_decoder_next_source_chunk(dec);
+        if (next_chunk) {
+            dec->queued_input_bytes -= next_chunk->size;
+            sip_decoder_set_stream_chunk(dec, next_chunk, 0);
+            if (dec->pending_skip > 0) {
+                continue;
+            }
             return TRUE;
         }
 
-        uint32_t preserved = sip_decoder_compact_input_buffer(dec);
-        uint32_t available = dec->input_capacity - preserved;
-        uint32_t pulled = sip_decoder_pull_queued_bytes(
-            dec,
-            dec->input_buffer + preserved,
-            available
-        );
+        if (src->pub.bytes_in_buffer > 0) {
+            if (!dec->input_finished) {
+                if (!progressed && dec->saved_restart_chunk) {
+                    sip_decoder_restore_restart_point(dec);
+                }
+                return FALSE;
+            }
 
-        if (preserved + pulled > 0) {
-            src->pub.next_input_byte = dec->input_buffer;
-            src->pub.bytes_in_buffer = preserved + pulled;
-            continue;
+            if (sip_decoder_ensure_input_capacity( dec, 2) != 0) {
+                return FALSE;
+            }
+
+            src->eoi_buffer[0] = (JOCTET)0xFF;
+            src->eoi_buffer[1] = (JOCTET)JPEG_EOI;
+            src->pub.next_input_byte = src->eoi_buffer;
+            src->pub.bytes_in_buffer = 2;
+            return TRUE;
         }
 
         if (!dec->input_finished) {
+            if (!progressed && dec->saved_restart_chunk) {
+                sip_decoder_restore_restart_point(dec);
+            }
             return FALSE;
         }
 
@@ -648,9 +711,6 @@ int sip_decoder_push_input(SipDecoder* dec, const uint8_t* data, uint32_t size, 
         if (sip_decoder_queue_input(dec, data, size) != 0) {
             return -1;
         }
-    } else if (!dec->source_mgr.pub.next_input_byte ||
-               dec->source_mgr.pub.next_input_byte == dec->source_mgr.eoi_buffer) {
-        dec->source_mgr.pub.next_input_byte = dec->input_buffer;
     }
 
     if (is_final) {
@@ -781,10 +841,6 @@ int sip_decoder_start(SipDecoder* dec) {
     if (setjmp(dec->jerr.setjmp_buffer)) return -1;
 
     dec->use_raw_data = sip_decoder_supports_raw_mode(dec);
-    // Keep DCT scaling, but rely on libjpeg's standard scanline RGB output.
-    // The custom raw-data path is more fragile and has produced visible artifacts
-    // on real-world photos, while scanline decode remains streaming-friendly and
-    // memory-bounded for our use case.
     dec->cinfo.out_color_space = JCS_RGB;
     dec->cinfo.do_fancy_upsampling = FALSE;
     dec->cinfo.do_block_smoothing = FALSE;
@@ -915,6 +971,56 @@ uint32_t sip_decoder_get_buffered_input_size(SipDecoder* dec) {
 }
 
 EMSCRIPTEN_KEEPALIVE
+int sip_decoder_compact_input_window(SipDecoder* dec) {
+    if (!dec) return -1;
+    if (setjmp(dec->jerr.setjmp_buffer)) return -1;
+
+    if (dec->using_buffered_source) {
+        return 0;
+    }
+
+    SipChunk *keep = dec->source_chunk;
+    if (dec->source_mgr.pub.next_input_byte &&
+        dec->source_mgr.pub.next_input_byte != dec->source_mgr.eoi_buffer) {
+        SipChunk *ptr_chunk = sip_decoder_find_chunk_for_pointer(dec, dec->source_mgr.pub.next_input_byte);
+        if (ptr_chunk) {
+            keep = ptr_chunk;
+        }
+    }
+
+    while (dec->input_head && dec->input_head != keep) {
+        SipChunk *chunk = dec->input_head;
+        dec->input_head = chunk->next;
+        if (!dec->input_head) {
+            dec->input_tail = NULL;
+        }
+        free(chunk->data);
+        free(chunk);
+    }
+
+    dec->saved_restart_chunk = keep;
+    if (keep && dec->source_mgr.pub.next_input_byte &&
+        dec->source_mgr.pub.next_input_byte != dec->source_mgr.eoi_buffer) {
+        dec->saved_restart_offset = (uint32_t)(dec->source_mgr.pub.next_input_byte - keep->data);
+    } else {
+        dec->saved_restart_offset = 0;
+    }
+    dec->saved_restart_bytes = (uint32_t)dec->source_mgr.pub.bytes_in_buffer;
+
+    return 0;
+}
+
+EMSCRIPTEN_KEEPALIVE
+int sip_decoder_reserve_input_capacity(SipDecoder* dec, uint32_t required_size) {
+    if (!dec) return -1;
+    if (setjmp(dec->jerr.setjmp_buffer)) return -1;
+    if (!dec->using_buffered_source) {
+        return 0;
+    }
+    return sip_decoder_ensure_input_capacity(dec, required_size);
+}
+
+EMSCRIPTEN_KEEPALIVE
 uint32_t sip_decoder_get_working_size(SipDecoder* dec) {
     if (!dec) return 0;
     return dec->row_stride + dec->raw_buffer_bytes;
@@ -924,11 +1030,21 @@ EMSCRIPTEN_KEEPALIVE
 uint32_t sip_decoder_get_input_offset(SipDecoder* dec) {
     if (!dec || !dec->source_mgr.pub.next_input_byte) return 0;
     if (dec->source_mgr.pub.next_input_byte == dec->source_mgr.eoi_buffer) return 0;
-    if (dec->source_mgr.pub.next_input_byte < dec->input_buffer ||
-        dec->source_mgr.pub.next_input_byte > dec->input_buffer + dec->input_capacity) {
+
+    if (dec->using_buffered_source) {
+        if (dec->source_mgr.pub.next_input_byte < dec->input_buffer ||
+            dec->source_mgr.pub.next_input_byte > dec->input_buffer + dec->input_capacity) {
+            return 0;
+        }
+        return (uint32_t)(dec->source_mgr.pub.next_input_byte - dec->input_buffer);
+    }
+
+    SipChunk *chunk = sip_decoder_find_chunk_for_pointer(dec, dec->source_mgr.pub.next_input_byte);
+    if (!chunk) {
         return 0;
     }
-    return (uint32_t)(dec->source_mgr.pub.next_input_byte - dec->input_buffer);
+
+    return (uint32_t)(dec->source_mgr.pub.next_input_byte - chunk->data);
 }
 
 EMSCRIPTEN_KEEPALIVE

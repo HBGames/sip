@@ -1468,6 +1468,22 @@ async function* decodeSourceInternal(input) {
   if (info.format === "jpeg") {
     const decoder2 = new WasmJpegDecoder();
     try {
+      if (prepared.kind === "bytes") {
+        const bytes2 = await collectSourceBytes(prepared);
+        decoder2.init(asArrayBuffer(bytes2));
+        decoder2.start();
+        while (true) {
+          const scanline = decoder2.readScanline();
+          if (!scanline) {
+            break;
+          }
+          yield scanline;
+        }
+        if (decoder2.finishStep() !== "ready") {
+          throw new Error("Unexpected end of JPEG input while finishing");
+        }
+        return;
+      }
       let headerReady = false;
       let started = false;
       for await (const { chunk, isFinal } of iterateInputChunks(prepared)) {
@@ -1654,6 +1670,74 @@ async function* runJpegTransform(source, info, options, infoDeferred, stats) {
     stats.update(decoder.getBufferedInputSize(), encoder.getBufferedOutputSize(), codecBytes, pipelineBytes);
   };
   try {
+    if (source.kind === "bytes") {
+      const bytes = await collectSourceBytes(source);
+      stats.addBytesIn(bytes.byteLength);
+      refresh();
+      if (orientationSegment) {
+        stats.note(`jpeg-orientation=${orientation}`);
+      }
+      decoder.init(asArrayBuffer(bytes));
+      const output = decoder.setScale(scale);
+      decodeWidth = output.width;
+      decodeHeight = output.height;
+      resizeState = createResizeState(output.width, output.height, target.width, target.height);
+      encoder.init(target.width, target.height, options.quality ?? DEFAULT_QUALITY);
+      encoder.start();
+      decoder.start();
+      headerReady = true;
+      started = true;
+      infoDeferred.resolve({
+        width: target.width,
+        height: target.height,
+        mimeType: "image/jpeg",
+        originalFormat: "jpeg"
+      });
+      stats.note(`jpeg-dct-scale=1/${scale}`);
+      stats.note(`jpeg-decoded=${decodeWidth}x${decodeHeight}`);
+      refresh();
+      while (true) {
+        const scanline = decoder.readScanline();
+        if (!scanline) {
+          break;
+        }
+        const outputScanlines = processScanline(resizeState, scanline.data, scanline.y);
+        refresh();
+        for (const outScanline of outputScanlines) {
+          encoder.writeScanline(outScanline);
+          refresh();
+          for (const jpegChunk of encoder.drainChunks()) {
+            const nextChunk = !emittedFirstChunk && orientationSegment ? injectJpegApp1Segment(jpegChunk, orientationSegment) : jpegChunk;
+            emittedFirstChunk = true;
+            stats.addBytesOut(nextChunk.byteLength);
+            refresh();
+            yield nextChunk;
+          }
+        }
+      }
+      if (decoder.finishStep() !== "ready") {
+        throw new Error("Unexpected end of JPEG input while finishing");
+      }
+      for (const outScanline of flushResize(resizeState)) {
+        encoder.writeScanline(outScanline);
+        refresh();
+        for (const jpegChunk of encoder.drainChunks()) {
+          const nextChunk = !emittedFirstChunk && orientationSegment ? injectJpegApp1Segment(jpegChunk, orientationSegment) : jpegChunk;
+          emittedFirstChunk = true;
+          stats.addBytesOut(nextChunk.byteLength);
+          refresh();
+          yield nextChunk;
+        }
+      }
+      for (const jpegChunk of encoder.finish()) {
+        const nextChunk = !emittedFirstChunk && orientationSegment ? injectJpegApp1Segment(jpegChunk, orientationSegment) : jpegChunk;
+        emittedFirstChunk = true;
+        stats.addBytesOut(nextChunk.byteLength);
+        refresh();
+        yield nextChunk;
+      }
+      return;
+    }
     if (orientationSegment) {
       stats.note(`jpeg-orientation=${orientation}`);
     }
@@ -1711,56 +1795,6 @@ async function* runJpegTransform(source, info, options, infoDeferred, stats) {
             refresh();
             yield nextChunk;
           }
-        }
-      }
-    }
-    if (!headerReady) {
-      if (decoder.readHeaderStep() !== "ready") {
-        throw new Error("Incomplete JPEG header");
-      }
-      const output = decoder.setScale(scale);
-      decodeWidth = output.width;
-      decodeHeight = output.height;
-      resizeState = createResizeState(output.width, output.height, target.width, target.height);
-      encoder.init(target.width, target.height, options.quality ?? DEFAULT_QUALITY);
-      encoder.start();
-      infoDeferred.resolve({
-        width: target.width,
-        height: target.height,
-        mimeType: "image/jpeg",
-        originalFormat: "jpeg"
-      });
-      stats.note(`jpeg-dct-scale=1/${scale}`);
-      stats.note(`jpeg-decoded=${decodeWidth}x${decodeHeight}`);
-      headerReady = true;
-      refresh();
-    }
-    if (!started) {
-      if (decoder.startStep() !== "ready") {
-        throw new Error("Unexpected end of JPEG input before decode start");
-      }
-      started = true;
-      refresh();
-    }
-    while (true) {
-      const scanline = decoder.readScanlineStep();
-      if (scanline === "needMore") {
-        throw new Error("Unexpected end of JPEG input");
-      }
-      if (scanline === null) {
-        break;
-      }
-      const outputScanlines = processScanline(resizeState, scanline.data, scanline.y);
-      refresh();
-      for (const outScanline of outputScanlines) {
-        encoder.writeScanline(outScanline);
-        refresh();
-        for (const jpegChunk of encoder.drainChunks()) {
-          const nextChunk = !emittedFirstChunk && orientationSegment ? injectJpegApp1Segment(jpegChunk, orientationSegment) : jpegChunk;
-          emittedFirstChunk = true;
-          stats.addBytesOut(nextChunk.byteLength);
-          refresh();
-          yield nextChunk;
         }
       }
     }

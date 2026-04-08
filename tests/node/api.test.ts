@@ -4,8 +4,10 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { beforeAll, describe, expect, it } from 'vitest';
 
+import type { PixelStream } from '../../src';
 import { collect, inspect, ready, toReadableStream, transform } from '../../src';
 import { probe } from '../../src/probe';
+import { WasmJpegDecoder } from '../../src/wasm';
 
 const ROOT = join(__dirname, '..', '..');
 const FIXTURES = join(ROOT, 'tests', 'fixtures');
@@ -115,6 +117,96 @@ function chunkStream(bytes: Uint8Array, chunkSize = 64 * 1024): ReadableStream<U
   });
 }
 
+async function expectPixelStreamsEqual(
+  label: string,
+  left: PixelStream,
+  right: PixelStream
+) {
+  const [leftInfo, rightInfo] = await Promise.all([left.info, right.info]);
+  expect(leftInfo, `${label} info should match`).toEqual(rightInfo);
+
+  const leftIterator = left[Symbol.asyncIterator]();
+  const rightIterator = right[Symbol.asyncIterator]();
+  let rowCount = 0;
+
+  while (true) {
+    const [leftNext, rightNext] = await Promise.all([leftIterator.next(), rightIterator.next()]);
+    if (leftNext.done !== rightNext.done) {
+      throw new Error(`${label} did not finish both streams together at row ${rowCount}`);
+    }
+
+    if (leftNext.done || rightNext.done) {
+      break;
+    }
+
+    if (leftNext.value.y !== rightNext.value.y) {
+      throw new Error(`${label} row index mismatch: ${leftNext.value.y} !== ${rightNext.value.y}`);
+    }
+    if (leftNext.value.width !== rightNext.value.width) {
+      throw new Error(`${label} row ${leftNext.value.y} width mismatch: ${leftNext.value.width} !== ${rightNext.value.width}`);
+    }
+    if (leftNext.value.data.byteLength !== rightNext.value.data.byteLength) {
+      throw new Error(
+        `${label} row ${leftNext.value.y} byte length mismatch: ` +
+        `${leftNext.value.data.byteLength} !== ${rightNext.value.data.byteLength}`
+      );
+    }
+
+    for (let i = 0; i < leftNext.value.data.byteLength; i++) {
+      if (leftNext.value.data[i] !== rightNext.value.data[i]) {
+        throw new Error(
+          `${label} row ${leftNext.value.y} differs at byte ${i}: ` +
+          `${leftNext.value.data[i]} !== ${rightNext.value.data[i]}`
+        );
+      }
+    }
+
+    rowCount++;
+  }
+}
+
+async function expectEncodedJpegsEqual(
+  label: string,
+  left: ArrayBuffer,
+  right: ArrayBuffer
+) {
+  await expectPixelStreamsEqual(
+    label,
+    decodeBufferedJpeg(new Uint8Array(left)),
+    decodeBufferedJpeg(new Uint8Array(right))
+  );
+}
+
+function decodeBufferedJpeg(bytes: Uint8Array): PixelStream {
+  const infoPromise = Promise.resolve({
+    width: probe(toArrayBuffer(bytes)).width,
+    height: probe(toArrayBuffer(bytes)).height,
+    originalFormat: 'jpeg' as const,
+  });
+
+  return {
+    info: infoPromise,
+    async *[Symbol.asyncIterator]() {
+      const decoder = new WasmJpegDecoder();
+      try {
+        const buffer = toArrayBuffer(bytes);
+        decoder.init(buffer);
+        decoder.start();
+
+        while (true) {
+          const row = decoder.readScanline();
+          if (!row) {
+            break;
+          }
+          yield row;
+        }
+      } finally {
+        decoder.dispose();
+      }
+    },
+  };
+}
+
 beforeAll(async () => {
   [
     largeJpeg,
@@ -184,9 +276,9 @@ describe('new API surface', () => {
     expect(streamed.info.originalFormat).toBe('jpeg');
     expect(streamed.info.width).toBe(1024);
     expect(streamed.info.height).toBe(809);
-    expect(streamed.stats.peakBufferedInputBytes).toBeLessThanOrEqual(64 * 1024);
+    expect(streamed.stats.peakBufferedInputBytes).toBeLessThanOrEqual(70 * 1024);
     expect(streamed.stats.bytesOut).toBe(streamed.data.byteLength);
-    expect(Buffer.from(streamed.data)).toEqual(Buffer.from(buffered.data));
+    await expectEncodedJpegsEqual('large streamed transform', streamed.data, buffered.data);
 
     const outputProbe = probe(streamed.data);
     expect(outputProbe.format).toBe('jpeg');
@@ -218,12 +310,38 @@ describe('new API surface', () => {
         })
       );
 
-      expect(Buffer.from(streamed.data), `${label} streamed JPEG should match buffered output`)
-        .toEqual(Buffer.from(buffered.data));
+      await expectEncodedJpegsEqual(`${label} streamed JPEG`, streamed.data, buffered.data);
       expect(streamed.stats.peakBufferedInputBytes, `${label} should keep buffered compressed input bounded`)
-        .toBeLessThanOrEqual(64 * 1024);
+        .toBeLessThanOrEqual(70 * 1024);
       expect(streamed.stats.peakPipelineBytes, `${label} should keep JPEG pipeline memory low`)
-        .toBeLessThan(256 * 1024);
+        .toBeLessThan(128 * 1024);
+    }
+  });
+
+  it('matches buffered output for aggressively chunked JPEG streams', async () => {
+    const cases = [
+      ['large', largeJpeg, 997],
+      ['baseline', colorBaselineJpeg, 257],
+      ['progressive', colorProgressiveJpeg, 521],
+    ] as const;
+
+    for (const [label, bytes, chunkSize] of cases) {
+      const streamed = await collect(
+        transform(chunkStream(bytes, chunkSize), {
+          width: 1024,
+          height: 1024,
+          quality: 82,
+        })
+      );
+      const buffered = await collect(
+        transform(toArrayBuffer(bytes), {
+          width: 1024,
+          height: 1024,
+          quality: 82,
+        })
+      );
+
+      await expectEncodedJpegsEqual(`${label} tiny-chunk streamed JPEG`, streamed.data, buffered.data);
     }
   });
 

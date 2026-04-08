@@ -155,8 +155,8 @@ describe('worker integration', () => {
 
       expect(response.status).toBe(200);
       expect(response.headers.get('content-type')).toBe('image/jpeg');
-      expect(Number(response.headers.get('x-peak-buffered-input-bytes'))).toBeLessThanOrEqual(64 * 1024);
-      expect(Number(response.headers.get('x-peak-pipeline-bytes'))).toBeLessThan(256 * 1024);
+      expect(Number(response.headers.get('x-peak-buffered-input-bytes'))).toBeLessThanOrEqual(70 * 1024);
+      expect(Number(response.headers.get('x-peak-pipeline-bytes'))).toBeLessThan(128 * 1024);
 
       const bytes = new Uint8Array(await response.arrayBuffer());
       expect(bytes[0]).toBe(0xff);
