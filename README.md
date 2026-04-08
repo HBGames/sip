@@ -1,207 +1,85 @@
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/standardagents/sip/main/docs/public/sip-logo-light.svg" />
+  <source media="(prefers-color-scheme: light)" srcset="https://raw.githubusercontent.com/standardagents/sip/main/docs/public/sip-logo.svg" />
+  <img alt="sip" src="https://raw.githubusercontent.com/standardagents/sip/main/docs/public/sip-logo.svg" width="400" />
+</picture>
+
 # @standardagents/sip
 
-**S**mall **I**mage **P**rocessor - Ultra memory-efficient image processing for Cloudflare Workers.
+Ultra low memory WASM image processing for Cloudflare Workers.
 
-## Features
+[![Docs](https://img.shields.io/badge/docs-sip.standardagents.ai-000?style=for-the-badge&labelColor=000&color=f6821f)](https://sip.standardagents.ai)
+[![npm](https://img.shields.io/npm/v/@standardagents/sip?style=flat-square)](https://www.npmjs.com/package/@standardagents/sip)
+[![License](https://img.shields.io/npm/l/@standardagents/sip?style=flat-square)](./LICENSE)
 
-- **Format Detection**: Probe images for format and dimensions without decoding
-- **Scanline Resize**: Memory-efficient bilinear interpolation using only 2 rows at a time
-- **Multi-format Input**: JPEG, PNG, WebP, AVIF
-- **JPEG Output**: Always outputs JPEG with configurable quality
-- **Size Control**: Resize to target dimensions and/or file size
-- **Streaming WASM** (optional): DCT-scaled JPEG decoding for <1MB peak memory on any image size
+sip resizes images inside Cloudflare Workers without blowing the 128 MB memory limit. It decodes one row at a time using WASM (libjpeg-turbo + libspng), so a 25 megapixel photo never needs to be fully buffered in memory.
 
-## Installation
+## Install
 
 ```bash
 pnpm add @standardagents/sip
 ```
 
-## Docs Site
-
-The repo includes a small static documentation site built with Arrow and Vite.
-
-```bash
-pnpm docs:dev
-pnpm docs:build
-pnpm docs:preview
-```
-
-- Source files live in `docs/`
-- The production build outputs to `docs-dist/`
-
-## Release
-
-Publishing is handled by GitHub Actions with npm trusted publishing. The workflow
-publishes from version tags and does not use an `NPM_TOKEN`.
-
-```bash
-pnpm verify
-pnpm verify:release
-pnpm release
-pnpm release:next
-pnpm release:dev
-```
-
-- `pnpm release` on `main` bumps `package.json`, commits the new stable version, and pushes the branch plus the `vX.Y.Z` tag
-- `pnpm release:next` and `pnpm release:dev` create a temporary tagged commit like `v1.1.1-next.231fa`, push only the tag, then restore your local branch to the original version
-- You can pass `--bump=major|minor|patch` and `--tag=<dist-tag>` to the release script directly
-- Stable tags create GitHub release notes after a successful npm publish; pre-release tags skip that step
-
-Trusted publishing must be configured in npm for the `standardagents/sip`
-repository and `.github/workflows/publish.yml`.
-
-## Usage
+## Quick start
 
 ```typescript
-import { sip } from '@standardagents/sip';
+import { ready, inspect, transform, toResponse } from '@standardagents/sip'
 
-// Process an image
-const result = await sip.process(imageBuffer, {
-  maxWidth: 2048,
-  maxHeight: 2048,
-  maxBytes: 1.5 * 1024 * 1024, // 1.5MB target
-  quality: 85,
-});
+export default {
+  async fetch(request: Request) {
+    await ready()
 
-console.log(result.width, result.height); // Output dimensions
-console.log(result.mimeType); // 'image/jpeg'
-console.log(result.originalFormat); // 'png', 'jpeg', etc.
-
-// Get the output
-const jpegBlob = new Blob([result.data], { type: 'image/jpeg' });
+    const { source } = await inspect(request)
+    return toResponse(transform(source, {
+      width: 1024,
+      height: 1024,
+      quality: 82,
+    }))
+  },
+}
 ```
 
-### Probe Only
-
-Get image info without decoding:
-
-```typescript
-import { sip } from '@standardagents/sip';
-
-const info = sip.probe(imageBuffer);
-console.log(info.format); // 'jpeg' | 'png' | 'webp' | 'avif'
-console.log(info.width, info.height);
-console.log(info.hasAlpha);
-```
+That's a complete Worker. It reads the uploaded image, resizes it, and streams back a JPEG.
 
 ## API
 
-### `sip.process(input, options)`
+| Function | Description |
+|----------|-------------|
+| `ready()` | Load the WASM module. Call once per isolate. |
+| `inspect(input)` | Read format, dimensions, and alpha from headers. Returns `{ info, source }`. |
+| `transform(input, opts?)` | One-shot decode + resize + JPEG encode. Returns an `EncodedImage`. |
+| `decode(input)` | Decode to a `PixelStream` (async iterable of scanlines). |
+| `resize(stream, opts)` | Resize a `PixelStream` row by row. |
+| `encodeJpeg(stream, opts?)` | Encode a `PixelStream` to JPEG chunks. |
+| `collect(image)` | Buffer an `EncodedImage` into an `ArrayBuffer` + stats. |
+| `toResponse(image, init?)` | Stream an `EncodedImage` into a `Response`. |
+| `toReadableStream(image)` | Convert an `EncodedImage` to a `ReadableStream`. |
 
-Process an image: decode, resize, and encode to JPEG.
+All functions accept `ByteInput` — any of `Request`, `Response`, `ReadableStream`, `ArrayBuffer`, `Uint8Array`, `Blob`, or `AsyncIterable<Uint8Array>`.
 
-**Parameters:**
-- `input: ArrayBuffer` - Input image data
-- `options: ProcessOptions` - Processing options
+## Format support
 
-**Options:**
-- `maxWidth?: number` - Maximum output width (default: 4096)
-- `maxHeight?: number` - Maximum output height (default: 4096)
-- `maxBytes?: number` - Target output size in bytes (default: 1.5MB)
-- `quality?: number` - JPEG quality 1-100 (default: 85)
+| Format | Decoder | Notes |
+|--------|---------|-------|
+| JPEG | libjpeg-turbo (WASM) | DCT scaling + scanline decode. Best memory profile. |
+| PNG | libspng (WASM) | Row-by-row decode. |
+| WebP | @jsquash/webp | Full decode — higher memory. |
+| AVIF | @jsquash/avif | Full decode — higher memory. |
 
-**Returns:** `ProcessResult`
-- `data: ArrayBuffer` - JPEG image data
-- `width: number` - Output width
-- `height: number` - Output height
-- `mimeType: 'image/jpeg'` - Always JPEG
-- `originalFormat: ImageFormat` - Original input format
+Output is always JPEG.
 
-### `sip.probe(input)`
+## Example Worker
 
-Get format and dimensions without decoding.
+A ready-to-deploy Cloudflare Worker with an upload UI:
 
-**Parameters:**
-- `input: ArrayBuffer | Uint8Array` - Image data
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/standardagents/sip-worker-example)
 
-**Returns:** `ProbeResult`
-- `format: 'jpeg' | 'png' | 'webp' | 'avif' | 'unknown'`
-- `width: number`
-- `height: number`
-- `hasAlpha: boolean`
+[View source](https://github.com/standardagents/sip-worker-example/blob/main/src/index.ts)
 
-## Memory Efficiency
+## Documentation
 
-The library has two processing modes:
-
-### Standard Mode (Default)
-
-Uses `@jsquash/*` packages for decode/encode with scanline-based resize:
-- Only 2 rows in memory during resize
-- Full image decoded to memory first
-- Works for images that fit in Worker memory (~128MB limit)
-
-### Streaming WASM Mode (Optional)
-
-For JPEG images when WASM is built, uses ultra-efficient streaming:
-- **DCT Scaling**: Decode JPEG at 1/2, 1/4, or 1/8 scale directly during decompression
-- **Scanline Processing**: Never holds the full image in memory
-- **Peak Memory**: ~50KB for any image size
-
-Memory comparison for a 25MP (6800x3900) image:
-
-| Mode | Peak Memory |
-|------|-------------|
-| Standard (@jsquash) | ~107MB |
-| Streaming WASM (1/4 scale) | ~50KB |
-
-## Building WASM Module
-
-The WASM module is optional. Without it, sip falls back to standard processing.
-
-### Prerequisites
-
-- [Emscripten](https://emscripten.org/docs/getting_started/downloads.html)
-- CMake
-- Make
-
-### Build
-
-```bash
-# Install Emscripten (if not already)
-git clone https://github.com/emscripten-core/emsdk.git
-cd emsdk && ./emsdk install latest && ./emsdk activate latest
-source ./emsdk_env.sh
-
-# Build WASM
-pnpm build:wasm
-```
-
-This downloads libjpeg-turbo, compiles it to WASM, and generates:
-- `dist/sip.js` - Emscripten loader
-- `dist/sip.wasm` - WebAssembly binary
-
-### Using WASM
-
-For Cloudflare Workers and other workerd-based runtimes, the package wires up
-the emitted WASM for you. The normal path is just:
-
-```typescript
-import { ready, transform, collect } from '@standardagents/sip';
-
-await ready();
-
-const image = transform(request.body ?? request, { width: 2048, height: 2048 });
-const result = await collect(image);
-```
-
-If you need to override the default loader, `ready({ wasm })` still accepts a
-compiled `WebAssembly.Module` or raw WASM bytes. The
-`globalThis.__SIP_WASM_LOADER__` hook still exists as an internal escape hatch,
-but it is not the intended public setup API.
-
-## Architecture
-
-```
-Input → [Probe] → [Decode*] → [Resize] → [Encode*] → Output
-                     ↓           ↓           ↓
-              WASM: DCT     Scanline    WASM: Scanline
-              Scaling       Bilinear    JPEG Encode
-```
-
-*When WASM is available, decode and encode process one row at a time.
+Full API reference, interactive demo, and code examples at **[sip.standardagents.ai](https://sip.standardagents.ai)**.
 
 ## License
 
-UNLICENSED - Proprietary
+[MIT](./LICENSE) - Standard Agents
