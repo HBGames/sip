@@ -3,28 +3,21 @@
 import { execSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
 import process from 'node:process'
-import { createInterface } from 'node:readline/promises'
+import * as p from '@clack/prompts'
 
-const VALID_BUMPS = new Set(['major', 'minor', 'patch'])
+const VALID_BUMPS = ['patch', 'minor', 'major']
 const args = process.argv.slice(2)
 
 const cliTag = readFlagValue('--tag')
-const cliBump = readFlagValue('--bump') ?? args.find((arg) => VALID_BUMPS.has(arg))
+const cliBump = readFlagValue('--bump') ?? args.find((arg) => VALID_BUMPS.includes(arg))
 const dryRun = args.includes('--dry-run')
 const yes = args.includes('--yes')
 
 function readFlagValue(name) {
   const inline = args.find((arg) => arg.startsWith(`${name}=`))
-  if (inline) {
-    return inline.slice(name.length + 1)
-  }
-
+  if (inline) return inline.slice(name.length + 1)
   const index = args.indexOf(name)
-  if (index !== -1) {
-    return args[index + 1]
-  }
-
-  return null
+  return index !== -1 ? args[index + 1] : null
 }
 
 function shellQuote(value) {
@@ -36,16 +29,14 @@ function run(command, options = {}) {
     encoding: 'utf8',
     stdio: options.inherit ? 'inherit' : 'pipe',
   })
-
   return typeof output === 'string' ? output.trim() : ''
 }
 
 function runMaybe(command, options = {}) {
   if (dryRun) {
-    console.log(`[dry-run] ${command}`)
+    p.log.info(`[dry-run] ${command}`)
     return ''
   }
-
   return run(command, options)
 }
 
@@ -61,10 +52,9 @@ function writePackageVersion(version) {
 
 function writePackageVersionMaybe(version) {
   if (dryRun) {
-    console.log(`[dry-run] package.json version -> ${version}`)
+    p.log.info(`[dry-run] package.json version -> ${version}`)
     return
   }
-
   writePackageVersion(version)
 }
 
@@ -83,119 +73,48 @@ function getCurrentCommitHash(length = 5) {
 function ensureCleanWorkingTree() {
   const status = run('git status --porcelain')
   if (status !== '') {
-    throw new Error('Working tree is not clean. Commit or stash changes before releasing.')
+    p.cancel('Working tree is not clean. Commit or stash changes first.')
+    process.exit(1)
   }
 }
 
 function ensureTagAvailable(tagName) {
   const tagRef = `refs/tags/${tagName}`
-
   try {
     run(`git rev-parse --verify --quiet ${shellQuote(tagRef)}`)
-    throw new Error(`Tag ${tagName} already exists locally.`)
+    p.cancel(`Tag ${tagName} already exists locally.`)
+    process.exit(1)
   } catch (error) {
-    if (!(error instanceof Error) || !error.message.includes('already exists locally')) {
-      // git rev-parse exits non-zero when the tag does not exist, which is expected.
-    } else {
+    if (error instanceof Error && error.message.includes('already exists locally')) {
       throw error
     }
   }
-
   const remoteTag = run(`git ls-remote --tags origin ${shellQuote(tagRef)}`)
   if (remoteTag !== '') {
-    throw new Error(`Tag ${tagName} already exists on origin.`)
+    p.cancel(`Tag ${tagName} already exists on origin.`)
+    process.exit(1)
   }
 }
 
 function parseBaseVersion(version) {
   const match = version.match(/^(\d+)\.(\d+)\.(\d+)(?:-.+)?$/)
-  if (!match) {
-    throw new Error(`Unsupported version format: ${version}`)
-  }
-
-  return match.slice(1, 4).map((part) => Number(part))
+  if (!match) throw new Error(`Unsupported version format: ${version}`)
+  return match.slice(1, 4).map(Number)
 }
 
 function bumpVersion(version, bumpType) {
   const [major, minor, patch] = parseBaseVersion(version)
-
-  if (bumpType === 'major') {
-    return `${major + 1}.0.0`
-  }
-
-  if (bumpType === 'minor') {
-    return `${major}.${minor + 1}.0`
-  }
-
+  if (bumpType === 'major') return `${major + 1}.0.0`
+  if (bumpType === 'minor') return `${major}.${minor + 1}.0`
   return `${major}.${minor}.${patch + 1}`
 }
 
 function validateTagLabel(tagLabel) {
-  if (tagLabel === 'latest') {
-    return
-  }
-
+  if (tagLabel === 'latest') return
   if (!/^[a-z][a-z0-9-]*$/.test(tagLabel)) {
-    throw new Error(`Invalid dist-tag "${tagLabel}". Use lowercase letters, numbers, and hyphens.`)
+    p.cancel(`Invalid dist-tag "${tagLabel}". Use lowercase letters, numbers, and hyphens.`)
+    process.exit(1)
   }
-}
-
-async function promptForBump(currentVersion) {
-  if (cliBump) {
-    if (!VALID_BUMPS.has(cliBump)) {
-      throw new Error(`Invalid bump type "${cliBump}". Use major, minor, or patch.`)
-    }
-    return cliBump
-  }
-
-  const choices = [
-    ['1', 'patch', `${currentVersion} -> ${bumpVersion(currentVersion, 'patch')}`],
-    ['2', 'minor', `${currentVersion} -> ${bumpVersion(currentVersion, 'minor')}`],
-    ['3', 'major', `${currentVersion} -> ${bumpVersion(currentVersion, 'major')}`],
-  ]
-
-  console.log('Select version bump:')
-  for (const [index, name, preview] of choices) {
-    console.log(`  ${index}. ${name} (${preview})`)
-  }
-
-  const rl = createInterface({ input: process.stdin, output: process.stdout })
-  try {
-    while (true) {
-      const answer = (await rl.question('Choice [1-3]: ')).trim()
-      const selected = choices.find(([index]) => index === answer)
-      if (selected) {
-        return selected[1]
-      }
-    }
-  } finally {
-    rl.close()
-  }
-}
-
-async function confirmRelease(summaryLines) {
-  if (yes) {
-    return true
-  }
-
-  console.log('')
-  for (const line of summaryLines) {
-    console.log(line)
-  }
-  console.log('')
-
-  const rl = createInterface({ input: process.stdin, output: process.stdout })
-  try {
-    const answer = (await rl.question(dryRun ? 'Continue with dry run? [y/N] ' : 'Continue with release? [y/N] ')).trim().toLowerCase()
-    return answer === 'y' || answer === 'yes'
-  } finally {
-    rl.close()
-  }
-}
-
-function runVerification() {
-  console.log('\nRunning local release verification...\n')
-  run('pnpm verify:release', { inherit: true })
 }
 
 function gitCommitAndTag(tagName) {
@@ -205,11 +124,14 @@ function gitCommitAndTag(tagName) {
 }
 
 async function main() {
+  p.intro('sip release')
+
   ensureCleanWorkingTree()
 
   const branch = getCurrentBranch()
   if (!branch) {
-    throw new Error('Cannot release from detached HEAD.')
+    p.cancel('Cannot release from detached HEAD.')
+    process.exit(1)
   }
 
   const currentVersion = getCurrentVersion()
@@ -217,10 +139,31 @@ async function main() {
   validateTagLabel(distTag)
 
   if (distTag === 'latest' && branch !== 'main') {
-    throw new Error('Stable releases are only allowed from main. Use --tag=next or --tag=dev on other branches.')
+    p.cancel('Stable releases are only allowed from main. Use --tag=next or --tag=dev on other branches.')
+    process.exit(1)
   }
 
-  const bumpType = await promptForBump(currentVersion)
+  p.log.info(`Current version: ${currentVersion}`)
+  p.log.info(`Branch: ${branch}`)
+  p.log.info(`Dist tag: ${distTag}`)
+
+  // Prompt for bump type
+  let bumpType = cliBump
+  if (!bumpType) {
+    bumpType = await p.select({
+      message: 'Version bump',
+      options: VALID_BUMPS.map((bump) => ({
+        value: bump,
+        label: bump,
+        hint: `${currentVersion} → ${bumpVersion(currentVersion, bump)}`,
+      })),
+    })
+    if (p.isCancel(bumpType)) {
+      p.cancel('Release cancelled.')
+      process.exit(0)
+    }
+  }
+
   const nextBaseVersion = bumpVersion(currentVersion, bumpType)
   const prerelease = distTag !== 'latest'
   const releaseVersion = prerelease
@@ -230,31 +173,59 @@ async function main() {
 
   ensureTagAvailable(tagName)
 
-  runVerification()
-
-  const confirmed = await confirmRelease([
-    `Current branch: ${branch}`,
-    `Current version: ${currentVersion}`,
-    `Release version: ${releaseVersion}`,
-    `Git tag: ${tagName}`,
-    `npm dist-tag: ${distTag}`,
-    prerelease
-      ? 'Flow: temporary tagged prerelease commit, push tag only, restore local branch'
-      : 'Flow: commit version bump on main, push branch and tag',
-  ])
-
-  if (!confirmed) {
-    console.log('\nRelease cancelled.')
-    return
+  // Verification
+  const runVerify = await p.confirm({
+    message: 'Run full verification before release?',
+    initialValue: true,
+  })
+  if (p.isCancel(runVerify)) {
+    p.cancel('Release cancelled.')
+    process.exit(0)
   }
 
+  if (runVerify) {
+    const s = p.spinner()
+    s.start('Running verification (typecheck, build, docs, tests)...')
+    try {
+      run('pnpm verify:release', { inherit: false })
+      s.stop('Verification passed')
+    } catch {
+      s.stop('Verification failed')
+      p.cancel('Fix the errors above and try again.')
+      process.exit(1)
+    }
+  }
+
+  // Confirmation
+  p.note(
+    [
+      `Version:   ${currentVersion} → ${releaseVersion}`,
+      `Tag:       ${tagName}`,
+      `Dist tag:  ${distTag}`,
+      `Flow:      ${prerelease ? 'temporary branch, push tag only' : 'commit to main, push branch + tag'}`,
+    ].join('\n'),
+    'Release summary'
+  )
+
+  if (!yes) {
+    const confirmed = await p.confirm({
+      message: dryRun ? 'Continue with dry run?' : 'Publish this release?',
+    })
+    if (p.isCancel(confirmed) || !confirmed) {
+      p.cancel('Release cancelled.')
+      process.exit(0)
+    }
+  }
+
+  // Execute release
   if (!prerelease) {
-    console.log('\nCreating stable release...\n')
+    const s = p.spinner()
+    s.start('Creating stable release...')
     writePackageVersionMaybe(releaseVersion)
     gitCommitAndTag(tagName)
-    runMaybe(`git push origin ${shellQuote(branch)} --follow-tags`, { inherit: true })
-    console.log(`\nRelease pushed: ${tagName}`)
-    console.log('Monitor the publish workflow in GitHub Actions.')
+    runMaybe(`git push origin ${shellQuote(branch)} --follow-tags`, { inherit: false })
+    s.stop(`Released ${tagName}`)
+    p.outro('Monitor the publish workflow at github.com/standardagents/sip/actions')
     return
   }
 
@@ -263,24 +234,24 @@ async function main() {
   let switched = false
 
   try {
-    runMaybe(`git switch -c ${shellQuote(tempBranch)}`, { inherit: true })
+    const s = p.spinner()
+    s.start('Creating pre-release...')
+    runMaybe(`git switch -c ${shellQuote(tempBranch)}`, { inherit: false })
     switched = !dryRun
-
     writePackageVersionMaybe(releaseVersion)
     gitCommitAndTag(tagName)
-    runMaybe(`git push origin ${shellQuote(tagName)}`, { inherit: true })
-
-    console.log(`\nPre-release tag pushed: ${tagName}`)
-    console.log('Monitor the publish workflow in GitHub Actions.')
+    runMaybe(`git push origin ${shellQuote(tagName)}`, { inherit: false })
+    s.stop(`Pre-release tag pushed: ${tagName}`)
+    p.outro('Monitor the publish workflow at github.com/standardagents/sip/actions')
   } finally {
     if (switched) {
-      run(`git switch ${shellQuote(originalBranch)}`, { inherit: true })
-      run(`git branch -D ${shellQuote(tempBranch)}`, { inherit: true })
+      run(`git switch ${shellQuote(originalBranch)}`, { inherit: false })
+      run(`git branch -D ${shellQuote(tempBranch)}`, { inherit: false })
     }
   }
 }
 
 main().catch((error) => {
-  console.error(`\n${error instanceof Error ? error.message : String(error)}\n`)
+  p.cancel(error instanceof Error ? error.message : String(error))
   process.exit(1)
 })

@@ -55,12 +55,13 @@
     "@jsquash/webp": "^1.5.0"
   },
   "devDependencies": {
-    "@playwright/test": "^1.59.1",
     "@arrow-js/core": "^1.0.6",
     "@arrow-js/framework": "^1.0.6",
+    "@clack/prompts": "^1.2.0",
     "@cloudflare/vite-plugin": "^1.31.0",
     "@cloudflare/vitest-pool-workers": "^0.10.14",
     "@cloudflare/workers-types": "^4.0.0",
+    "@playwright/test": "^1.59.1",
     "@types/node": "^22.16.5",
     "shiki": "^4.0.2",
     "tsup": "^8.0.0",
