@@ -1,7 +1,7 @@
 import { component, html, reactive } from '@arrow-js/core'
 import { render } from '@arrow-js/framework'
 import highlighted from 'virtual:highlighted-code'
-import sampleImageUrl from './sample.png'
+import sampleImageUrl from './sample.jpg'
 const sipLogoUrl = '/sip-logo.svg'
 import './styles.css'
 
@@ -239,7 +239,7 @@ async function getDemoFile() {
     throw new Error('Could not load the sample image')
   }
   const blob = await res.blob()
-  return new File([blob], 'sample.png', { type: blob.type || 'image/png' })
+  return new File([blob], 'sample.jpg', { type: blob.type || 'image/jpeg' })
 }
 
 function getDocsBaseUrl() {
