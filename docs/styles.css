@@ -530,6 +530,7 @@ code, pre { font-family: var(--mono); }
 .deploy-button {
   display: inline-flex;
   align-items: center;
+  margin-bottom: 1rem;
 }
 
 .deploy-button img {
