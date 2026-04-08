@@ -1,27 +1,11 @@
 // @ts-nocheck - workerd loads the generated Emscripten module dynamically
-import createSipModule from '../dist/sip.js';
-import sipWasm from '../dist/sip.wasm';
 import avifDecoderWasm from '@jsquash/avif/codec/dec/avif_dec.wasm';
 import webpDecoderWasm from '@jsquash/webp/codec/dec/webp_dec.wasm';
-import { collect, ready, toResponse, transform } from '../src';
+import { collect, ready, toResponse, transform } from '@standardagents/sip';
 
 globalThis.__SIP_CODEC_WASM__ = {
   avif: avifDecoderWasm,
   webp: webpDecoderWasm,
-};
-
-globalThis.__SIP_WASM_LOADER__ = async () => {
-  return createSipModule({
-    instantiateWasm(
-      imports: WebAssembly.Imports,
-      receiveInstance: (instance: WebAssembly.Instance) => void
-    ) {
-      WebAssembly.instantiate(sipWasm, imports).then((instance) => {
-        receiveInstance(instance);
-      });
-      return {};
-    },
-  });
 };
 
 let wasmReady: Promise<void> | null = null;

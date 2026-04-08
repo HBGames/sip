@@ -15,7 +15,7 @@ export default defineConfig({
     trace: 'retain-on-failure',
   },
   webServer: {
-    command: `pnpm check:wasm-pair && pnpm exec vite --config docs/vite.config.mjs --host 127.0.0.1 --port ${port}`,
+    command: `pnpm build:code && pnpm check:wasm-pair && pnpm exec vite --config docs/vite.config.mjs --host 127.0.0.1 --port ${port}`,
     url: baseURL,
     reuseExistingServer: !process.env.CI,
     timeout: 120_000,

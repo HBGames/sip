@@ -430,14 +430,14 @@ const App = component(() => html`
               <p>
                 Loads the WASM module. Call this once when your Worker starts up
                 and cache the promise. You can pass a pre-compiled
-                <code>WebAssembly.Module</code> or raw bytes. In Workers, the
-                normal pattern is a static <code>.wasm</code> import plus
-                <code>ready({ wasm: sipWasm })</code>.
+                <code>WebAssembly.Module</code> or raw bytes if you need to
+                override the default loader. In Workers and workerd, the normal
+                pattern is just <code>await ready()</code>.
               </p>
               <p>
-                When you pass a statically imported <code>WebAssembly.Module</code>,
-                <code>ready()</code> is already idempotent, so calling it directly
-                in your request handler is fine.
+                The workerd build wires up the bundled WASM for you, and
+                <code>ready()</code> is idempotent, so calling it directly in
+                your request handler is fine.
               </p>
               <div class="shiki-block" data-code="readySig"></div>
             </article>

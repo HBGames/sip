@@ -1,9 +1,7 @@
 // @ts-nocheck - workerd loads generated wasm assets dynamically
-import createSipModule from '../dist/sip.js'
-import sipWasm from '../dist/sip.wasm'
 import avifDecoderWasm from '@jsquash/avif/codec/dec/avif_dec.wasm'
 import webpDecoderWasm from '@jsquash/webp/codec/dec/webp_dec.wasm'
-import { collect, inspect, ready, transform } from '../src'
+import { collect, inspect, ready, transform } from '@standardagents/sip'
 
 interface Env {
   ASSETS: Fetcher
@@ -24,19 +22,6 @@ const EXPOSE_HEADERS = [
   'X-Elapsed-Ms',
   'X-Stats-Notes',
 ].join(', ')
-
-globalThis.__SIP_WASM_LOADER__ = async () =>
-  createSipModule({
-    instantiateWasm(
-      imports: WebAssembly.Imports,
-      receiveInstance: (instance: WebAssembly.Instance) => void
-    ) {
-      WebAssembly.instantiate(sipWasm, imports).then((instance) => {
-        receiveInstance(instance)
-      })
-      return {}
-    },
-  })
 
 globalThis.__SIP_CODEC_WASM__ = {
   avif: avifDecoderWasm,
@@ -65,7 +50,7 @@ export default {
       )
     }
 
-    await ready({ wasm: sipWasm })
+    await ready()
     return handleProcess(request, url)
   },
 } satisfies ExportedHandler<Env>

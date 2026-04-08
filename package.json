@@ -19,7 +19,7 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "workerd": "./dist/index.js",
+      "workerd": "./dist/workerd.js",
       "import": "./dist/index.js",
       "default": "./dist/index.js"
     },
@@ -29,22 +29,22 @@
     "dist"
   ],
   "scripts": {
-    "clean": "rm -f dist/index.js dist/index.d.ts dist/index.js.map",
-    "build": "([ -f dist/sip.wasm ] || pnpm build:wasm) && pnpm clean && tsup",
+    "clean": "rm -f dist/index.js dist/index.d.ts dist/index.js.map dist/workerd.js dist/workerd.d.ts",
+    "build": "([ -f dist/sip.wasm ] || pnpm build:wasm) && pnpm clean && tsup && node scripts/generate-workerd-entry.mjs",
     "build:wasm": "bash wasm/build.sh",
-    "build:code": "pnpm clean && tsup",
+    "build:code": "pnpm clean && tsup && node scripts/generate-workerd-entry.mjs",
     "dev": "tsup --watch",
     "check:wasm-pair": "node scripts/check-wasm-pair.mjs",
-    "docs:dev": "pnpm check:wasm-pair && vite --config docs/vite.config.mjs",
-    "docs:build": "pnpm check:wasm-pair && vite build --config docs/vite.config.mjs",
-    "docs:preview": "pnpm check:wasm-pair && vite preview --config docs/vite.config.mjs",
+    "docs:dev": "pnpm build:code && pnpm check:wasm-pair && vite --config docs/vite.config.mjs",
+    "docs:build": "pnpm build:code && pnpm check:wasm-pair && vite build --config docs/vite.config.mjs",
+    "docs:preview": "pnpm build:code && pnpm check:wasm-pair && vite preview --config docs/vite.config.mjs",
     "typecheck": "tsc --noEmit",
     "verify": "pnpm typecheck && pnpm build && pnpm docs:build && pnpm test:unit",
     "verify:release": "pnpm build:wasm && pnpm verify",
     "test": "vitest",
     "test:unit": "vitest run",
     "test:watch": "vitest --watch",
-    "test:workers": "vitest run --config vitest.config.workers.ts",
+    "test:workers": "pnpm build:code && vitest run --config vitest.config.workers.ts",
     "test:e2e": "playwright test",
     "release": "node scripts/release.mjs",
     "release:next": "node scripts/release.mjs --tag=next",

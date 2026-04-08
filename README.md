@@ -174,20 +174,21 @@ This downloads libjpeg-turbo, compiles it to WASM, and generates:
 
 ### Using WASM
 
-For Workers and bundlers, statically import the emitted `.wasm` asset and pass it
-to `ready()` once at startup:
+For Cloudflare Workers and other workerd-based runtimes, the package wires up
+the emitted WASM for you. The normal path is just:
 
 ```typescript
 import { ready, transform, collect } from '@standardagents/sip';
-import sipWasm from '@standardagents/sip/dist/sip.wasm';
 
-await ready({ wasm: sipWasm });
+await ready();
 
 const image = transform(request.body ?? request, { width: 2048, height: 2048 });
 const result = await collect(image);
 ```
 
-The `globalThis.__SIP_WASM_LOADER__` hook still exists as an internal escape hatch,
+If you need to override the default loader, `ready({ wasm })` still accepts a
+compiled `WebAssembly.Module` or raw WASM bytes. The
+`globalThis.__SIP_WASM_LOADER__` hook still exists as an internal escape hatch,
 but it is not the intended public setup API.
 
 ## Architecture

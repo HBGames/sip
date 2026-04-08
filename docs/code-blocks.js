@@ -12,15 +12,12 @@ request.body -> inspect() -> transform -> Response
     lang: 'typescript',
     code: `
 import { ready } from '@standardagents/sip'
-import sipWasm from '@standardagents/sip/dist/sip.wasm'
 
-// Preferred in Workers and bundlers that can import the .wasm asset
-await ready({ wasm: sipWasm })
+// Normal Worker / workerd usage
+await ready()
 
-// Or pass a pre-compiled WebAssembly.Module explicitly
+// Optional escape hatches if you need to wire the module yourself
 await ready({ wasm: compiledModule })
-
-// Or pass raw WASM bytes
 await ready({ wasm: wasmArrayBuffer })
 `,
   },
@@ -139,14 +136,15 @@ const stream = toReadableStream(image) // ReadableStream<Uint8Array>
     lang: 'typescript',
     code: `
 import { inspect, ready, toResponse, transform } from '@standardagents/sip'
-import sipWasm from '@standardagents/sip/dist/sip.wasm'
 
 export default {
   async fetch(request: Request) {
-    await ready({ wasm: sipWasm })
+    await ready()
     const url = new URL(request.url)
 
-    // GET / → serve upload page (HTML omitted)
+    const HTML = '<!doctype html><html ...'
+
+    // GET / → serve upload page
     if (request.method === 'GET') return new Response(HTML, {
       headers: { 'Content-Type': 'text/html' },
     })
