@@ -518,9 +518,17 @@ const App = component(() => html`
             <h2>What is sip?</h2>
             <p>
               sip is an image processing library built specifically for Cloudflare
-              Workers. Workers have a hard 128 MB memory limit, and most image
+              Workers. Workers have a 128 MB memory limit, and most image
               libraries blow through that the moment you decode a large photo.
               A 25 megapixel JPEG becomes ~100 MB of buffered pixels in memory.
+            </p>
+            <p>
+              Why sip? Cloudflare already has built-in image processing, but it
+              can still be useful to run transforms directly inside your own
+              Worker or Durable Object. That can mean fewer bindings to manage,
+              better isolation inside the code that already owns the request,
+              and easier distribution when you want image processing packaged as
+              part of your application instead of a separate service boundary.
             </p>
             <p>
               sip avoids that by processing images one row at a time. It never
