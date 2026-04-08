@@ -138,52 +138,26 @@ const stream = toReadableStream(image) // ReadableStream<Uint8Array>
   fullExample: {
     lang: 'typescript',
     code: `
-import { collect, inspect, ready, transform } from '@standardagents/sip'
+import { inspect, ready, toResponse, transform } from '@standardagents/sip'
 import sipWasm from '@standardagents/sip/dist/sip.wasm'
-
-// HTML trimmed for brevity.
-// Full deployable starter: github.com/standardagents/sip-worker-example
-const HTML = '<!doctype html>...'
 
 export default {
   async fetch(request: Request) {
-    const url = new URL(request.url)
     await ready({ wasm: sipWasm })
+    const url = new URL(request.url)
 
-    if (request.method === 'GET' && url.pathname === '/') {
-      return new Response(HTML, {
-        headers: { 'Content-Type': 'text/html; charset=utf-8' },
-      })
-    }
+    // GET / → serve upload page (HTML omitted)
+    if (request.method === 'GET') return new Response(HTML, {
+      headers: { 'Content-Type': 'text/html' },
+    })
 
-    if (request.method !== 'POST' || url.pathname !== '/api/process') {
-      return new Response('Not found', { status: 404 })
-    }
-
-    const { info, source } = await inspect(request)
-    if (info.format !== 'jpeg' && info.format !== 'png') {
-      return new Response('This example worker accepts JPEG and PNG inputs only.', {
-        status: 415,
-      })
-    }
-    const image = transform(source, {
-      width: Number(url.searchParams.get('width')) || 1024,
-      height: Number(url.searchParams.get('height')) || 1024,
+    // POST /api/process → resize and stream back JPEG
+    const { source } = await inspect(request)
+    return toResponse(transform(source, {
+      width:   Number(url.searchParams.get('width'))   || 1024,
+      height:  Number(url.searchParams.get('height'))  || 1024,
       quality: Number(url.searchParams.get('quality')) || 82,
-    })
-    const result = await collect(image)
-
-    return new Response(result.data, {
-      headers: {
-        'Content-Type': result.info.mimeType,
-        'X-Input-Format': info.format,
-        'X-Input-Width': String(info.width),
-        'X-Input-Height': String(info.height),
-        'X-Output-Width': String(result.info.width),
-        'X-Output-Height': String(result.info.height),
-        'X-Peak-Pipeline-Bytes': String(result.stats.peakPipelineBytes),
-      },
-    })
+    }))
   },
 }
 `,

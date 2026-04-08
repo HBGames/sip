@@ -413,11 +413,11 @@ code, pre { font-family: var(--mono); }
 
 .shiki-block pre.shiki {
   margin: 0;
-  padding: 1.25rem 1.5rem;
+  padding: 1rem 1.25rem;
   background: var(--surface) !important;
   font-family: var(--mono);
-  font-size: 0.84rem;
-  line-height: 1.7;
+  font-size: 0.8rem;
+  line-height: 1.65;
   overflow-x: auto;
   tab-size: 2;
 }
