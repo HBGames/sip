@@ -181,12 +181,7 @@ static void sip_decoder_free_raw_buffers(SipDecoder *dec) {
 }
 
 static int sip_decoder_supports_raw_mode(SipDecoder *dec) {
-    if (dec->cinfo.num_components == 3 &&
-        (dec->cinfo.jpeg_color_space == JCS_YCbCr ||
-         dec->cinfo.jpeg_color_space == JCS_RGB)) {
-        return 1;
-    }
-
+    (void)dec;
     return 0;
 }
 
@@ -786,14 +781,13 @@ int sip_decoder_start(SipDecoder* dec) {
     if (setjmp(dec->jerr.setjmp_buffer)) return -1;
 
     dec->use_raw_data = sip_decoder_supports_raw_mode(dec);
-    if (dec->use_raw_data) {
-        dec->cinfo.raw_data_out = TRUE;
-    } else {
-        // Force RGB output for fallback scanline decode.
-        dec->cinfo.out_color_space = JCS_RGB;
-        dec->cinfo.do_fancy_upsampling = FALSE;
-        dec->cinfo.do_block_smoothing = FALSE;
-    }
+    // Keep DCT scaling, but rely on libjpeg's standard scanline RGB output.
+    // The custom raw-data path is more fragile and has produced visible artifacts
+    // on real-world photos, while scanline decode remains streaming-friendly and
+    // memory-bounded for our use case.
+    dec->cinfo.out_color_space = JCS_RGB;
+    dec->cinfo.do_fancy_upsampling = FALSE;
+    dec->cinfo.do_block_smoothing = FALSE;
 
     if (!jpeg_start_decompress(&dec->cinfo)) {
         return 1;
