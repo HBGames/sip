@@ -1,7 +1,7 @@
 import { component, html, reactive } from '@arrow-js/core'
 import { render } from '@arrow-js/framework'
 import highlighted from 'virtual:highlighted-code'
-import sampleImageUrl from './sample.jpg'
+const sampleImageUrl = '/sample.jpg'
 const sipLogoUrl = '/sip-logo.svg'
 import './styles.css'
 
