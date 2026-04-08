@@ -8,11 +8,12 @@
 
 Ultra low memory WASM image processing for Cloudflare Workers.
 
-[![Docs](https://img.shields.io/badge/docs-sip.standardagents.ai-000?style=for-the-badge&labelColor=000&color=f6821f)](https://sip.standardagents.ai)
 [![npm](https://img.shields.io/npm/v/@standardagents/sip?style=flat-square)](https://www.npmjs.com/package/@standardagents/sip)
 [![License](https://img.shields.io/npm/l/@standardagents/sip?style=flat-square)](./LICENSE)
 
 sip resizes images inside Cloudflare Workers without blowing the 128 MB memory limit. It decodes one row at a time using WASM (libjpeg-turbo + libspng), so a 25 megapixel photo never needs to be fully buffered in memory.
+
+<a href="https://sip.standardagents.ai"><img src="https://img.shields.io/badge/%E2%86%92_Read_the_docs-sip.standardagents.ai-000?style=for-the-badge&labelColor=111&color=222" alt="Read the docs" /></a>
 
 ## Install
 
