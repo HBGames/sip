@@ -530,13 +530,16 @@ code, pre { font-family: var(--mono); }
 .deploy-button {
   display: inline-flex;
   align-items: center;
-  margin-bottom: 1rem;
 }
 
 .deploy-button img {
   display: block;
-  height: 40px;
+  height: 36px;
   width: auto;
+}
+
+.example__actions .deploy-button {
+  margin-bottom: 0;
 }
 
 .example__note {
