@@ -102,6 +102,29 @@ The "Markdown docs" button in the hero links to `/llms.md`, so users (and LLMs)
 will see whatever is in that file. If the two drift, agents will get stale or
 contradicting information. Always update both in the same commit.
 
+### SSR + hydration
+
+The docs site is server-rendered at build time and hydrated on the client.
+
+- `docs/main.js` — defines all components and `export`s the `App` factory.
+  Module-level browser side effects (fetch, scroll handlers, etc.) are
+  guarded behind `if (isBrowser)` so the file can be imported by Node.
+- `docs/entry-server.js` — imports `App` and uses
+  `renderToString` from `@arrow-js/ssr` to produce an HTML string. Inlines
+  the shiki-highlighted code blocks too.
+- `docs/scripts/prerender.mjs` — runs after `vite build` completes. Spins
+  up Vite in middleware mode, calls `entry-server.renderPage()`, and
+  patches the empty `<div id="app"></div>` in `docs-dist/client/index.html`
+  with the rendered HTML.
+- The client uses `hydrate()` from `@arrow-js/hydrate` instead of `render()`
+  so reactive state attaches to the existing server-rendered nodes without
+  re-creating them.
+
+When adding new code-block keys to `docs/code-blocks.js`, the prerender step
+will automatically inline them — no extra wiring needed. Just don't add
+client-only side effects at module load that crash on the server (use the
+`isBrowser` guard).
+
 ## Release Automation
 
 Publishing is driven by tag pushes. npm releases use trusted publishing from

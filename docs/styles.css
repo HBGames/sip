@@ -1112,6 +1112,42 @@ code, pre { font-family: var(--mono); }
   justify-content: space-between;
   font-size: 0.82rem;
   color: var(--text-muted);
+  gap: 1rem;
+}
+
+.footer__credit {
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.footer__credit:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.footer__links {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.footer__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: color 0.15s, background 0.15s;
+}
+
+.footer__icon:hover {
+  color: var(--text);
+  background: var(--surface);
+  text-decoration: none;
 }
 
 .footer a { color: var(--text-secondary); }

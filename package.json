@@ -36,7 +36,7 @@
     "dev": "tsup --watch",
     "check:wasm-pair": "node scripts/check-wasm-pair.mjs",
     "docs:dev": "pnpm build:code && pnpm check:wasm-pair && vite --config docs/vite.config.mjs",
-    "docs:build": "pnpm build:code && pnpm check:wasm-pair && vite build --config docs/vite.config.mjs",
+    "docs:build": "pnpm build:code && pnpm check:wasm-pair && vite build --config docs/vite.config.mjs && node docs/scripts/prerender.mjs",
     "docs:preview": "pnpm build:code && pnpm check:wasm-pair && vite preview --config docs/vite.config.mjs",
     "docs:og": "node scripts/generate-og-image.mjs",
     "typecheck": "tsc --noEmit",
@@ -52,6 +52,8 @@
     "release:dev": "node scripts/release.mjs --tag=dev"
   },
   "dependencies": {
+    "@arrow-js/hydrate": "^1.0.6",
+    "@arrow-js/ssr": "^1.0.6",
     "@jsquash/avif": "^2.1.1",
     "@jsquash/webp": "^1.5.0"
   },
