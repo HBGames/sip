@@ -923,12 +923,18 @@ const App = component(() => html`
     <footer class="footer">
       <div class="shell">
         <div class="footer__inner">
-          <a
-            href="https://standardagentbuilder.com"
-            target="_blank"
-            rel="noopener"
-            class="footer__credit"
-          >By the Standard Agents team</a>
+          <div class="footer__credits">
+            <a
+              href="https://standardagentbuilder.com"
+              target="_blank"
+              rel="noopener"
+              class="footer__credit"
+            >By the Standard Agents team</a>
+            <span class="footer__sep">·</span>
+            <span>Made with <a href="https://arrow-js.com" target="_blank" rel="noopener">ArrowJS</a></span>
+            <span class="footer__sep">·</span>
+            <a href="https://github.com/standardagents/sip/blob/main/LICENSE" target="_blank" rel="noopener">MIT licensed</a>
+          </div>
           <div class="footer__links">
             <a
               href="https://x.com/jpschroeder"

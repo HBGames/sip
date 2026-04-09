@@ -1115,6 +1115,29 @@ code, pre { font-family: var(--mono); }
   gap: 1rem;
 }
 
+.footer__credits {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  color: var(--text-muted);
+}
+
+.footer__credits a {
+  color: var(--text-muted);
+  text-decoration: none;
+  transition: color 0.15s;
+}
+
+.footer__credits a:hover {
+  color: var(--text);
+  text-decoration: none;
+}
+
+.footer__sep {
+  color: var(--border);
+}
+
 .footer__credit {
   color: var(--text-muted);
   text-decoration: none;
